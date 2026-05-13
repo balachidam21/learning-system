@@ -17,5 +17,9 @@ EXISTING=$(crontab -l 2>/dev/null | awk '
   !skip {print}
 ') || true
 
+# Back up current crontab before overwriting (best-effort, ignored if no crontab)
+crontab -l > "/tmp/crontab-backup-$(date +%s).txt" 2>/dev/null || true
+
 { echo "$EXISTING"; echo; cat "$TMP_RENDERED"; } | crontab -
 echo "Installed learning-system cron entries. Verify: crontab -l"
+echo "(Previous crontab backed up to /tmp/crontab-backup-*.txt)"
