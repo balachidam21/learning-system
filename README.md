@@ -20,8 +20,9 @@ User-level tooling that auto-extracts signal from Claude Code transcripts and pr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
+cp .env.example .env  # then edit .env and fill in ANTHROPIC_API_KEY
 echo "$HOME/Documents/code/ai-inference-track" > projects.txt
-./install_cron.sh
+./install_cron.sh   # only after .env is filled in
 ```
 
 ## Manual usage

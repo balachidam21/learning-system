@@ -7,3 +7,4 @@ projects.txt
 error.log
 *.egg-info/
 dist/
+.env
