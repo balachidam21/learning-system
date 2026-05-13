@@ -1,0 +1,10 @@
+# learning-system cron entries (managed by install_cron.sh — do not edit between markers)
+# Every 15 min: extract new transcripts
+*/15 * * * * /Users/__USER__/.claude/bin/learning-system/.venv/bin/python /Users/__USER__/.claude/bin/learning-system/extractor.py --scan-all >> /Users/__USER__/.claude/bin/learning-system/error.log 2>&1
+
+# Saturday 06:00: regenerate this week's bird-eye report for ai-inference-track
+0 6 * * 6 /Users/__USER__/.claude/bin/learning-system/.venv/bin/python /Users/__USER__/.claude/bin/learning-system/aggregator.py --project-dir /Users/__USER__/Documents/code/ai-inference-track >> /Users/__USER__/.claude/bin/learning-system/error.log 2>&1
+
+# 1st of month 07:00: drift report for last completed month
+0 7 1 * * /Users/__USER__/.claude/bin/learning-system/.venv/bin/python /Users/__USER__/.claude/bin/learning-system/drift_monitor.py --project-dir /Users/__USER__/Documents/code/ai-inference-track >> /Users/__USER__/.claude/bin/learning-system/error.log 2>&1
+# end learning-system cron entries
