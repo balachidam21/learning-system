@@ -147,15 +147,50 @@ def scan_all(claude_root: Path = Path.home() / ".claude",
     return extracted
 
 
+def _dry_run_scan(claude_root: Path = Path.home() / ".claude",
+                  projects_file: Path = PROJECTS_FILE,
+                  state_path: Path = STATE_PATH) -> None:
+    """Report planned extractions and estimated token counts. No API calls."""
+    state = load_state(state_path)
+    current_version = _version()
+    total_chars = 0
+    sessions_to_extract = []
+    for project_path in _read_projects(projects_file):
+        log_dir = project_path / "log"
+        if not log_dir.exists():
+            continue
+        for transcript in transcripts_for_project(project_path, claude_root=claude_root):
+            if not needs_extraction(transcript, state, current_version):
+                continue
+            size = transcript.stat().st_size
+            sessions_to_extract.append((project_path, transcript, size))
+            total_chars += size
+    print(f"Would extract {len(sessions_to_extract)} session(s):")
+    for project_path, transcript, size in sessions_to_extract:
+        print(f"  {transcript.name} ({size:,} bytes) → {project_path}/log/")
+    # rough token estimate: ~4 chars/token
+    est_tokens = total_chars // 4
+    est_cost_opus = est_tokens / 1_000_000 * 15.0  # $15/M input tokens for Opus
+    print(f"\nEstimated input tokens: ~{est_tokens:,}")
+    print(f"Estimated cost (Opus, input only): ~${est_cost_opus:.2f}")
+    print("This is an estimate — actual cost depends on output tokens too.")
+
+
 def _main() -> None:
     parser = argparse.ArgumentParser(
         description="Extract learning signals from Claude Code session transcripts. "
                     "Use --scan-all for cron mode, or --transcript + --project-log-dir for one-off.",
     )
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Scan and report planned extractions without calling the API")
     parser.add_argument("--scan-all", action="store_true")
     parser.add_argument("--transcript", type=Path)
     parser.add_argument("--project-log-dir", type=Path)
     args = parser.parse_args()
+
+    if args.dry_run:
+        _dry_run_scan()
+        return
 
     if args.scan_all:
         n = scan_all()
