@@ -1,0 +1,67 @@
+# learning-system
+
+User-level tooling that auto-extracts signal from Claude Code transcripts and produces a weekly bird's-eye dashboard per opted-in project.
+
+## Layout
+
+- `extractor.py` — Anthropic-API-backed per-session signal extraction
+- `aggregator.py` — weekly markdown + HTML report builder
+- `drift_monitor.py` — monthly system-self-check
+- `lib/` — shared helpers (slug, state)
+- `prompts/` — versioned extraction prompts
+- `fixtures/` — saved transcripts for regression testing
+- `tests/` — pytest suite
+- `cron/` — crontab template
+- `state.json` — per-session checkpoint (gitignored)
+- `projects.txt` — opt-in registry, one path per line (gitignored)
+
+## Setup
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+echo "$HOME/Documents/code/ai-inference-track" > projects.txt
+./install_cron.sh
+```
+
+## Manual usage
+
+```bash
+# Extract any pending transcripts now
+.venv/bin/python extractor.py --scan-all
+
+# Build report for current week
+.venv/bin/python aggregator.py --project-dir ~/Documents/code/ai-inference-track
+
+# Build last-month drift report
+.venv/bin/python drift_monitor.py --project-dir ~/Documents/code/ai-inference-track
+```
+
+## Tests
+
+```bash
+.venv/bin/pytest -v
+```
+
+## Versioning
+
+Bump `VERSION` (semver) when changing extractor prompts or signal schema.
+Version is stamped on every signal lineage record and every aggregated report.
+A version bump triggers automatic re-extraction of all transcripts on next cron run.
+
+## Drift monitoring
+
+`drift_monitor.py` runs monthly via cron and produces `log/system-drift/YYYY-Mxx.md`
+in each opted-in project. Run `/system-review` in Claude Code on the first
+weekend of each month to walk through findings.
+
+## Where data lives
+
+- Code: `~/.claude/bin/learning-system/`
+- Data: `<project>/log/signal.jsonl`, `signal.meta.jsonl`, `bird-eye/`, `system-drift/`
+- Transcripts (read-only): `~/.claude/projects/<slug>/`
+
+## See also
+
+- Design spec: `~/Documents/code/ai-inference-track/plan/specs/2026-05-12-self-learning-system-stage-1.html`
+- Implementation plan: `~/Documents/code/ai-inference-track/plan/plans/2026-05-12-self-learning-system-stage-1.html`
