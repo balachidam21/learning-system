@@ -142,3 +142,22 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
 
     out_path.write_text("\n".join(body) + "\n")
     return out_path
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Build the monthly drift report comparing auto vs manual logs.",
+    )
+    parser.add_argument("--project-dir", type=Path, required=True)
+    parser.add_argument("--month", type=str, default=None,
+                        help="YYYY-MM; default = last completed month")
+    args = parser.parse_args()
+    if args.month:
+        month = args.month
+    else:
+        today = datetime.date.today().replace(day=1)
+        last = today - datetime.timedelta(days=1)
+        month = f"{last.year}-{last.month:02d}"
+    out = build_drift_report(args.project_dir, month=month)
+    print(f"wrote {out}")

@@ -255,3 +255,18 @@ def _render_html(week: str, markdown_text: str, all_signals: List[Dict[str, Any]
         markdown_text=markdown_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
         footer=footer,
     )
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Build the weekly bird's-eye report (markdown + HTML) for a project.",
+    )
+    parser.add_argument("--project-dir", type=Path, required=True,
+                        help="Path to the project root (contains log/signal.jsonl)")
+    parser.add_argument("--week", type=str, default=None,
+                        help="ISO week like '2026-W20'; defaults to current week")
+    args = parser.parse_args()
+    md_path, html_path = build_report(args.project_dir, week=args.week)
+    print(f"wrote {md_path}")
+    print(f"wrote {html_path}")
