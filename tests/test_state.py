@@ -33,9 +33,20 @@ def test_no_extraction_needed_when_unchanged(tmp_path):
     transcript = tmp_path / "session.jsonl"
     transcript.write_text("dummy")
     import datetime
-    mtime = datetime.datetime.utcfromtimestamp(transcript.stat().st_mtime).isoformat() + "Z"
+    mtime = datetime.datetime.fromtimestamp(
+        transcript.stat().st_mtime, tz=datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     state = {
         "schema_version": 1, "extractor_version": "0.1.0",
         "sessions": {transcript.stem: {"last_mtime": mtime}}
     }
     assert needs_extraction(transcript, state, current_version="0.1.0") is False
+
+def test_needs_extraction_when_mtime_changed(tmp_path):
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("dummy")
+    state = {
+        "schema_version": 1, "extractor_version": "0.1.0",
+        "sessions": {transcript.stem: {"last_mtime": "1999-01-01T00:00:00Z"}}
+    }
+    assert needs_extraction(transcript, state, current_version="0.1.0") is True

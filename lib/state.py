@@ -23,12 +23,14 @@ def save_state(state_path: Path, state: Dict[str, Any]) -> None:
 
 def needs_extraction(transcript: Path, state: Dict[str, Any], current_version: str) -> bool:
     """A transcript needs (re)extraction if it has no prior record,
-    or its mtime is newer than the recorded one, or the extractor version bumped."""
+    or its mtime differs from the recorded one, or the extractor version bumped."""
     if state.get("extractor_version") != current_version:
         return True
     session_id = transcript.stem
     prior = state.get("sessions", {}).get(session_id)
     if prior is None:
         return True
-    current_mtime = datetime.datetime.utcfromtimestamp(transcript.stat().st_mtime).isoformat() + "Z"
+    current_mtime = datetime.datetime.fromtimestamp(
+        transcript.stat().st_mtime, tz=datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     return current_mtime != prior.get("last_mtime")
