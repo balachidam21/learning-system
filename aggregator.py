@@ -10,6 +10,7 @@ from plotly.offline import plot
 
 ROOT = Path(__file__).parent
 AGGREGATOR_VERSION = (ROOT / "VERSION").read_text().strip()
+DECAY_THRESHOLD_DAYS = 14
 
 
 def _load_signals(signal_path: Path) -> List[Dict[str, Any]]:
@@ -87,7 +88,7 @@ def _section_solid_longest(all_signals: List[Dict[str, Any]]) -> str:
     if not rows:
         lines.append("_(no 🟢 items yet)_")
     for days, topic in rows[:8]:
-        decay = " ← decay candidate" if days >= 14 else ""
+        decay = " ← decay candidate" if days >= DECAY_THRESHOLD_DAYS else ""
         lines.append(f"- {topic}: {days}d{decay}")
     return "\n".join(lines) + "\n"
 
@@ -220,7 +221,7 @@ def _build_decay_heatmap(all_signals: List[Dict[str, Any]]) -> str:
     topics = sorted(last_touch.keys(), key=lambda t: last_touch[t])
     days = [(today - last_touch[t]).days for t in topics]
     fig = go.Figure(go.Bar(x=days, y=topics, orientation="h",
-                           marker_color=["#b91c1c" if d >= 14 else "#059669" for d in days]))
+                           marker_color=["#b91c1c" if d >= DECAY_THRESHOLD_DAYS else "#059669" for d in days]))
     fig.update_layout(title="Time since last touch (🟢 items)", height=320,
                       margin=dict(l=160, r=20, t=40, b=40), plot_bgcolor="#fafaf7",
                       xaxis_title="days")
@@ -251,6 +252,6 @@ def _render_html(week: str, markdown_text: str, all_signals: List[Dict[str, Any]
         week=week,
         hours_chart=_build_hours_chart(all_signals),
         decay_chart=_build_decay_heatmap(all_signals),
-        markdown_text=markdown_text.replace("<", "&lt;").replace(">", "&gt;"),
+        markdown_text=markdown_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"),
         footer=footer,
     )
