@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 
 ROOT = Path(__file__).parent
 DRIFT_VERSION = (ROOT / "VERSION").read_text().strip()
+FAILURE_RATE_ALERT_THRESHOLD = 10
 DAILY_LOG_HEADER_RE = re.compile(r"^###\s+(\w+\s+\d+,\s+\d{4})", re.M)
 MONTH_NAMES = {m: i for i, m in enumerate(
     ["January", "February", "March", "April", "May", "June",
@@ -23,30 +24,54 @@ def _parse_daily_log_dates(log_text: str, year: int, month: int) -> List[datetim
     """
     seen = set()
     for match in DAILY_LOG_HEADER_RE.finditer(log_text):
-        parts = match.group(1).split()
         try:
+            parts = match.group(1).split()
             mname = parts[0]
             day = int(parts[1].rstrip(","))
             yr = int(parts[2])
+            if yr == year and MONTH_NAMES.get(mname) == month:
+                seen.add(datetime.date(yr, month, day))
         except (IndexError, ValueError):
             continue
-        if yr == year and MONTH_NAMES.get(mname) == month:
-            seen.add(datetime.date(yr, month, day))
     return sorted(seen)
 
 
-def _load_signal_records(signal_path: Path, year: int, month: int) -> List[Dict[str, Any]]:
+def _load_signal_records(signal_path: Path, year: int, month: int,
+                         meta_path: Path = None) -> List[Dict[str, Any]]:
     if not signal_path.exists():
         return []
+
+    # Build session_id -> extracted_at lookup from lineage file
+    meta_extracted_at: Dict[str, str] = {}
+    if meta_path is not None and meta_path.exists():
+        for line in meta_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                m = json.loads(line)
+                sid = m.get("session_id")
+                if sid:
+                    meta_extracted_at[sid] = m.get("extracted_at", "")
+            except json.JSONDecodeError:
+                continue
+
     out = []
     for line in signal_path.read_text().splitlines():
         if not line.strip():
             continue
         try:
             rec = json.loads(line)
-            t = datetime.datetime.fromisoformat(rec.get("started_at", "").replace("Z", ""))
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError:
             continue
+
+        ts_str = rec.get("started_at") or meta_extracted_at.get(rec.get("session_id"), "")
+        if not ts_str:
+            continue
+        try:
+            t = datetime.datetime.fromisoformat(ts_str.replace("Z", ""))
+        except ValueError:
+            continue
+
         if t.year == year and t.month == month:
             out.append(rec)
     return out
@@ -62,7 +87,11 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
     log_path = project_dir / "log" / "DAILY_LOG.md"
     log_text = log_path.read_text() if log_path.exists() else ""
     manual_dates = _parse_daily_log_dates(log_text, year, m)
-    signals = _load_signal_records(project_dir / "log" / "signal.jsonl", year, m)
+    signals = _load_signal_records(
+        project_dir / "log" / "signal.jsonl",
+        year, m,
+        meta_path=project_dir / "log" / "signal.meta.jsonl",
+    )
 
     auto_dates = set()
     for s in signals:
@@ -103,12 +132,12 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
             "- Investigate extractor gaps on the missing days. "
             "Likely causes: Claude Code restart, transcript truncated, or cron didn't run that week."
         )
-    if failure_rate > 10:
+    if failure_rate > FAILURE_RATE_ALERT_THRESHOLD:
         body.append(
-            f"- Failure rate above 10% — review error.log for patterns; "
+            f"- Failure rate above {FAILURE_RATE_ALERT_THRESHOLD}% — review error.log for patterns; "
             f"consider extractor prompt review."
         )
-    if not (missing_auto or failure_rate > 10):
+    if not (missing_auto or failure_rate > FAILURE_RATE_ALERT_THRESHOLD):
         body.append("- No drift signals worth acting on this month.")
 
     out_path.write_text("\n".join(body) + "\n")
