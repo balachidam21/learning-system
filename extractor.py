@@ -97,3 +97,73 @@ def append_records(signal: Dict[str, Any], lineage: Dict[str, Any], log_dir: Pat
         f.write(json.dumps(signal) + "\n")
     with (log_dir / "signal.meta.jsonl").open("a") as f:
         f.write(json.dumps(lineage) + "\n")
+
+
+import argparse
+from lib.slug import transcripts_for_project
+from lib.state import load_state, save_state, needs_extraction
+
+STATE_PATH = ROOT / "state.json"
+PROJECTS_FILE = ROOT / "projects.txt"
+
+
+def _read_projects(projects_file: Path) -> list:
+    if not projects_file.exists():
+        return []
+    return [Path(line.strip()) for line in projects_file.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
+def scan_all(claude_root: Path = Path.home() / ".claude",
+             projects_file: Path = PROJECTS_FILE,
+             state_path: Path = STATE_PATH) -> int:
+    """Scan opted-in projects for new/changed transcripts, extract each.
+    Returns count of sessions extracted this run."""
+    state = load_state(state_path)
+    current_version = _version()
+    extracted = 0
+    for project_path in _read_projects(projects_file):
+        log_dir = project_path / "log"
+        if not log_dir.exists():
+            continue
+        for transcript in transcripts_for_project(project_path, claude_root=claude_root):
+            if not needs_extraction(transcript, state, current_version):
+                continue
+            result = extract_session(transcript)
+            append_records(result.signal, result.lineage, log_dir)
+            mtime = datetime.datetime.fromtimestamp(
+                transcript.stat().st_mtime, tz=datetime.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            state["sessions"][transcript.stem] = {
+                "transcript_path": str(transcript),
+                "last_mtime": mtime,
+                "last_extracted_at": result.lineage["extracted_at"],
+                "extraction_status": result.lineage["extraction_status"],
+            }
+            extracted += 1
+    state["extractor_version"] = current_version
+    save_state(state_path, state)
+    return extracted
+
+
+def _main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scan-all", action="store_true")
+    parser.add_argument("--transcript", type=Path)
+    parser.add_argument("--project-log-dir", type=Path)
+    args = parser.parse_args()
+
+    if args.scan_all:
+        n = scan_all()
+        print(f"extracted {n} session(s)")
+        return
+    if args.transcript and args.project_log_dir:
+        result = extract_session(args.transcript)
+        append_records(result.signal, result.lineage, args.project_log_dir)
+        print(f"extracted 1 session from {args.transcript}")
+        return
+    parser.error("must pass --scan-all OR --transcript + --project-log-dir")
+
+
+if __name__ == "__main__":
+    _main()
