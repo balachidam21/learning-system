@@ -1,0 +1,16 @@
+{
+  "session_id": "f4a8-log-001",
+  "started_at": "2026-05-11T19:00:00Z",
+  "ended_at": "2026-05-11T19:05:00Z",
+  "duration_min": 5,
+  "topics": ["cross-entropy as likelihood"],
+  "skills_used": ["log-session"],
+  "tutoring_artifacts": [],
+  "struggle_markers": [],
+  "click_markers": ["felt easy after yesterday's kl thread"],
+  "patch_list_deltas_inferred": [
+    {"topic": "cross-entropy as likelihood", "from": null, "to": "🟢"}
+  ],
+  "user_preference_hints": [],
+  "extraction_status": "ok"
+}

@@ -1,0 +1,16 @@
+{
+  "session_id": "f4a8-tut-001",
+  "started_at": "2026-05-10T15:00:00Z",
+  "ended_at": "2026-05-10T16:30:00Z",
+  "duration_min": 90,
+  "topics": ["KL divergence", "KL asymmetry"],
+  "skills_used": ["tutor"],
+  "tutoring_artifacts": [],
+  "struggle_markers": [],
+  "click_markers": ["bird term in discrete example dominates the reverse direction"],
+  "patch_list_deltas_inferred": [
+    {"topic": "KL asymmetry", "from": null, "to": "🟢"}
+  ],
+  "user_preference_hints": ["geometric intuition first"],
+  "extraction_status": "ok"
+}

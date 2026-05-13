@@ -1,0 +1,6 @@
+{"type":"meta","session_id":"f4a8-tut-001","started_at":"2026-05-10T15:00:00Z"}
+{"type":"user","content":"tutor me on kl divergence asymmetry","ts":"2026-05-10T15:00:05Z"}
+{"type":"assistant","content":"Let's build the picture geometrically first. KL(P||Q) weights disagreements by P. KL(Q||P) weights by Q. Same disagreements, different jury.","ts":"2026-05-10T15:00:30Z"}
+{"type":"user","content":"so the bird term in my discrete example dominates the reverse direction","ts":"2026-05-10T15:15:00Z"}
+{"type":"assistant","content":"Exactly — that's the click. The asymmetry physically lives in the weighting distribution.","ts":"2026-05-10T15:15:30Z"}
+{"type":"meta","ended_at":"2026-05-10T16:30:00Z"}
