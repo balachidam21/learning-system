@@ -5,6 +5,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Tuple, List, Dict, Any
 
+import plotly.graph_objects as go
+from plotly.offline import plot
+
 ROOT = Path(__file__).parent
 AGGREGATOR_VERSION = (ROOT / "VERSION").read_text().strip()
 
@@ -175,5 +178,79 @@ def build_report(project_dir: Path, week: str = None) -> Tuple[Path, Path]:
         + _lineage_footer(week_signals)
     )
     md_path.write_text(md)
-    html_path.write_text("<!-- HTML rendered in Task 8 -->")
+    html_path.write_text(_render_html(
+        week=week,
+        markdown_text=md,
+        all_signals=all_signals,
+        footer=f"aggregator v{AGGREGATOR_VERSION} · {len(week_signals)} sessions this week",
+    ))
     return md_path, html_path
+
+
+def _build_hours_chart(all_signals: List[Dict[str, Any]]) -> str:
+    weeks: Dict[str, float] = {}
+    for s in all_signals:
+        try:
+            t = datetime.datetime.fromisoformat(s.get("started_at", "").replace("Z", ""))
+        except ValueError:
+            continue
+        y, w, _ = t.isocalendar()
+        key = f"{y}-W{w:02d}"
+        weeks[key] = weeks.get(key, 0) + s.get("duration_min", 0) / 60.0
+    xs = sorted(weeks.keys())[-8:]
+    ys = [weeks[k] for k in xs]
+    fig = go.Figure(go.Bar(x=xs, y=ys, marker_color="#1e6fd9"))
+    fig.update_layout(title="Hours per week (last 8 weeks)", height=320,
+                      margin=dict(l=40, r=20, t=40, b=40), plot_bgcolor="#fafaf7")
+    return plot(fig, include_plotlyjs="inline", output_type="div")
+
+
+def _build_decay_heatmap(all_signals: List[Dict[str, Any]]) -> str:
+    last_touch: Dict[str, datetime.datetime] = {}
+    for s in all_signals:
+        for d in s.get("patch_list_deltas_inferred", []) or []:
+            if d.get("to") == "🟢":
+                try:
+                    t = datetime.datetime.fromisoformat(s.get("ended_at", "").replace("Z", ""))
+                except ValueError:
+                    continue
+                if d["topic"] not in last_touch or t > last_touch[d["topic"]]:
+                    last_touch[d["topic"]] = t
+    today = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    topics = sorted(last_touch.keys(), key=lambda t: last_touch[t])
+    days = [(today - last_touch[t]).days for t in topics]
+    fig = go.Figure(go.Bar(x=days, y=topics, orientation="h",
+                           marker_color=["#b91c1c" if d >= 14 else "#059669" for d in days]))
+    fig.update_layout(title="Time since last touch (🟢 items)", height=320,
+                      margin=dict(l=160, r=20, t=40, b=40), plot_bgcolor="#fafaf7",
+                      xaxis_title="days")
+    return plot(fig, include_plotlyjs=False, output_type="div")
+
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Bird's-eye {week}</title>
+<style>
+body{{font-family:-apple-system,system-ui,sans-serif;background:#fafaf7;color:#1a1a1a;
+     max-width:1100px;margin:0 auto;padding:24px;line-height:1.55}}
+h1{{margin-top:0}} h2{{border-top:1px solid #d8d4cc;padding-top:16px;margin-top:32px}}
+.charts{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+pre{{background:#f4f1ea;padding:12px;border-radius:5px;font-size:13px;white-space:pre-wrap}}
+.footer{{color:#666;font-size:12.5px;margin-top:32px;padding-top:12px;border-top:1px solid #d8d4cc}}
+</style></head><body>
+<h1>Bird's-eye — {week}</h1>
+<div class="charts">{hours_chart}{decay_chart}</div>
+<h2>Report (markdown)</h2>
+<pre>{markdown_text}</pre>
+<div class="footer">{footer}</div>
+</body></html>"""
+
+
+def _render_html(week: str, markdown_text: str, all_signals: List[Dict[str, Any]],
+                 footer: str) -> str:
+    return _HTML_TEMPLATE.format(
+        week=week,
+        hours_chart=_build_hours_chart(all_signals),
+        decay_chart=_build_decay_heatmap(all_signals),
+        markdown_text=markdown_text.replace("<", "&lt;").replace(">", "&gt;"),
+        footer=footer,
+    )
