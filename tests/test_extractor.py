@@ -48,3 +48,15 @@ def test_extract_handles_api_failure():
         client.messages.create.side_effect = RuntimeError("simulated timeout")
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "failed"
+
+
+def test_extract_handles_non_json_response():
+    transcript = FIXTURES / "tutoring_session.jsonl"
+    resp = MagicMock()
+    resp.content = [MagicMock(text="not actually json, sorry")]
+    resp.usage = MagicMock(input_tokens=100, output_tokens=10)
+    with patch("extractor._anthropic_client") as client:
+        client.messages.create.return_value = resp
+        result = extract_session(transcript)
+    assert result.signal["extraction_status"] == "malformed"
+    assert "raw_response" in result.signal

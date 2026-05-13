@@ -35,6 +35,12 @@ class ExtractorResult:
 def extract_session(transcript_path: Path) -> ExtractorResult:
     """Run the extractor on one transcript. Returns signal + lineage records.
     Does NOT write to disk — caller appends."""
+    if _anthropic_client is None:
+        raise RuntimeError(
+            "Anthropic client not initialized — ensure ANTHROPIC_API_KEY is set "
+            "and 'anthropic' is installed."
+        )
+
     prompt_text = PROMPT_PATH.read_text()
     transcript_text = transcript_path.read_text()
     version = _version()
@@ -48,8 +54,7 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": transcript_text}],
         )
-        signal = json.loads(response.content[0].text)
-        signal.setdefault("extraction_status", "ok")
+        raw_text = response.content[0].text
         tokens_in = getattr(response.usage, "input_tokens", 0)
         tokens_out = getattr(response.usage, "output_tokens", 0)
     except Exception as e:
@@ -60,6 +65,17 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
         }
         tokens_in = 0
         tokens_out = 0
+    else:
+        try:
+            signal = json.loads(raw_text)
+            signal.setdefault("extraction_status", "ok")
+        except json.JSONDecodeError as e:
+            signal = {
+                "session_id": transcript_path.stem,
+                "extraction_status": "malformed",
+                "error": f"non-JSON response: {e}",
+                "raw_response": raw_text[:2000],
+            }
 
     lineage = {
         "session_id": signal.get("session_id", transcript_path.stem),
