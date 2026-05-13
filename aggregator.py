@@ -1,0 +1,179 @@
+"""Build weekly bird's-eye report from signal.jsonl + DAILY_LOG + PATCH_LIST."""
+import datetime
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Tuple, List, Dict, Any
+
+ROOT = Path(__file__).parent
+AGGREGATOR_VERSION = (ROOT / "VERSION").read_text().strip()
+
+
+def _load_signals(signal_path: Path) -> List[Dict[str, Any]]:
+    if not signal_path.exists():
+        return []
+    seen: Dict[str, Dict[str, Any]] = {}
+    for line in signal_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        sid = rec.get("session_id")
+        # latest-wins dedup
+        if sid not in seen or rec.get("ended_at", "") >= seen[sid].get("ended_at", ""):
+            seen[sid] = rec
+    return list(seen.values())
+
+
+def _isoweek_range(week: str) -> Tuple[datetime.datetime, datetime.datetime]:
+    """Return [start, end) datetimes for an ISO week like '2026-W19'."""
+    year, w = week.split("-W")
+    start = datetime.datetime.fromisocalendar(int(year), int(w), 1)
+    end = start + datetime.timedelta(days=7)
+    return start, end
+
+
+def _current_week() -> str:
+    today = datetime.date.today()
+    y, w, _ = today.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def _filter_week(signals: List[Dict[str, Any]], week: str) -> List[Dict[str, Any]]:
+    start, end = _isoweek_range(week)
+    out = []
+    for s in signals:
+        try:
+            t = datetime.datetime.fromisoformat(s.get("started_at", "").replace("Z", ""))
+        except ValueError:
+            continue
+        if start <= t < end:
+            out.append(s)
+    return out
+
+
+def _section_pace(week_signals: List[Dict[str, Any]], all_signals: List[Dict[str, Any]]) -> str:
+    week_hours = sum(s.get("duration_min", 0) for s in week_signals) / 60.0
+    cumulative_hours = sum(s.get("duration_min", 0) for s in all_signals) / 60.0
+    return (
+        f"## Pace\n\n"
+        f"- This week: **{week_hours:.1f} hrs**\n"
+        f"- Target: 15-20 hrs (sprint) / 10 hrs (baseline)\n"
+        f"- Cumulative phase hours: {cumulative_hours:.1f}\n"
+    )
+
+
+def _section_solid_longest(all_signals: List[Dict[str, Any]]) -> str:
+    last_touch: Dict[str, str] = {}
+    for s in all_signals:
+        for d in s.get("patch_list_deltas_inferred", []) or []:
+            if d.get("to") == "🟢":
+                last_touch[d["topic"]] = max(last_touch.get(d["topic"], ""), s.get("ended_at", ""))
+    today = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    lines = ["## What's been solid longest", ""]
+    rows = []
+    for topic, ts in last_touch.items():
+        try:
+            days = (today - datetime.datetime.fromisoformat(ts.replace("Z", ""))).days
+        except ValueError:
+            continue
+        rows.append((days, topic))
+    rows.sort(reverse=True)
+    if not rows:
+        lines.append("_(no 🟢 items yet)_")
+    for days, topic in rows[:8]:
+        decay = " ← decay candidate" if days >= 14 else ""
+        lines.append(f"- {topic}: {days}d{decay}")
+    return "\n".join(lines) + "\n"
+
+
+def _section_slipped() -> str:
+    return "## What slipped or stalled\n\n_(Stage 2 retention probes will populate this section)_\n"
+
+
+def _section_trajectory(all_signals: List[Dict[str, Any]]) -> str:
+    week_buckets: Dict[str, Dict[str, Any]] = {}
+    for s in all_signals:
+        try:
+            t = datetime.datetime.fromisoformat(s.get("started_at", "").replace("Z", ""))
+        except ValueError:
+            continue
+        y, w, _ = t.isocalendar()
+        key = f"{y}-W{w:02d}"
+        b = week_buckets.setdefault(key, {"hours": 0.0, "topics": set(), "new_green": 0})
+        b["hours"] += s.get("duration_min", 0) / 60.0
+        b["topics"].update(s.get("topics", []) or [])
+        for d in s.get("patch_list_deltas_inferred", []) or []:
+            if d.get("to") == "🟢":
+                b["new_green"] += 1
+    lines = ["## Trajectory", "", "| Week | Hours | Topics touched | New 🟢 |", "|---|---|---|---|"]
+    for k in sorted(week_buckets.keys()):
+        b = week_buckets[k]
+        lines.append(f"| {k} | {b['hours']:.1f} | {len(b['topics'])} | {b['new_green']} |")
+    return "\n".join(lines) + "\n"
+
+
+def _section_patterns(week_signals: List[Dict[str, Any]]) -> str:
+    hints = Counter()
+    struggles = Counter()
+    for s in week_signals:
+        for h in s.get("user_preference_hints", []) or []:
+            hints[h] += 1
+        for st in s.get("struggle_markers", []) or []:
+            struggles[st] += 1
+    out = ["## Patterns", ""]
+    if hints:
+        out.append("**Preference hints this week:**")
+        for h, c in hints.most_common(5):
+            out.append(f"- {h} ({c}×)")
+    if struggles:
+        out.append("\n**Recurring struggle markers:**")
+        for st, c in struggles.most_common(5):
+            out.append(f"- {st} ({c}×)")
+    if not hints and not struggles:
+        out.append("_(no notable patterns this week)_")
+    return "\n".join(out) + "\n"
+
+
+def _lineage_footer(week_signals: List[Dict[str, Any]]) -> str:
+    failed = sum(1 for s in week_signals if s.get("extraction_status") != "ok")
+    return (f"\n---\n"
+            f"*Generated {datetime.date.today().isoformat()} by aggregator v{AGGREGATOR_VERSION}. "
+            f"{len(week_signals) - failed}/{len(week_signals)} sessions extracted ok this week.*\n")
+
+
+def build_report(project_dir: Path, week: str = None) -> Tuple[Path, Path]:
+    """Build weekly markdown + HTML report. Returns (md_path, html_path)."""
+    week = week or _current_week()
+    signal_path = project_dir / "log" / "signal.jsonl"
+    all_signals = _load_signals(signal_path)
+
+    out_dir = project_dir / "log" / "bird-eye"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md_path = out_dir / f"{week}.md"
+    html_path = out_dir / f"{week}.html"
+
+    if not all_signals:
+        md_path.write_text(
+            f"# Bird's-eye — {week}\n\n"
+            f"_Bootstrapping. Need ≥ 2 sessions of extracted signal before pacing/retention "
+            f"analysis is meaningful. Currently 0 records in signal.jsonl._\n"
+        )
+        html_path.write_text("<html><body><h1>Bootstrapping</h1></body></html>")
+        return md_path, html_path
+
+    week_signals = _filter_week(all_signals, week)
+    md = (
+        f"# Bird's-eye — {week}\n\n"
+        + _section_pace(week_signals, all_signals)
+        + "\n" + _section_solid_longest(all_signals)
+        + "\n" + _section_slipped()
+        + "\n" + _section_trajectory(all_signals)
+        + "\n" + _section_patterns(week_signals)
+        + _lineage_footer(week_signals)
+    )
+    md_path.write_text(md)
+    html_path.write_text("<!-- HTML rendered in Task 8 -->")
+    return md_path, html_path
