@@ -16,11 +16,11 @@ from lib.state import load_state, save_state, needs_extraction
 ROOT = Path(__file__).parent
 PROMPT_PATH = ROOT / "prompts" / "extract.v1.txt"
 PROMPT_ID = "extract.v1"
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-opus-4-7"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "/Users/balajichidambaram/.local/bin/claude")
-# Skip transcripts larger than this — exceeds Haiku's 200k context window.
-# Heuristic: ~4 chars/token, target ~180k tokens leaves room for the prompt.
-MAX_TRANSCRIPT_BYTES = 720_000
+# Opus 4.7 has a 1M-token context window. ~4 chars/token = ~4MB max.
+# Cap at 3.5MB to leave headroom for the prompt + output.
+MAX_TRANSCRIPT_BYTES = 3_500_000
 CLI_TIMEOUT_SEC = 600
 STATE_PATH = ROOT / "state.json"
 PROJECTS_FILE = ROOT / "projects.txt"

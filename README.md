@@ -45,6 +45,14 @@ The extractor uses the Claude Code CLI (`claude`) under the hood — no API key 
 .venv/bin/pytest -v
 ```
 
+## Model
+
+Default is `claude-opus-4-7` (1M context) via the Claude Code CLI. Uses your
+Claude Code subscription quota — no separate API key needed. Opus is chosen
+for extraction quality on long, nuanced learning sessions. To switch to a
+cheaper/faster model, edit `MODEL` in `extractor.py` (e.g. `claude-haiku-4-5`
+for cheap, but capped at ~720KB transcripts).
+
 ## Versioning
 
 Bump `VERSION` (semver) when changing extractor prompts or signal schema.
