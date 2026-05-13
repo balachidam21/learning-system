@@ -99,3 +99,18 @@ def test_extract_handles_cli_error_field():
     with patch("extractor.subprocess.run", return_value=proc):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "failed"
+
+
+def test_extract_skips_oversized_transcript(tmp_path):
+    """Transcripts over MAX_TRANSCRIPT_BYTES should skip without calling the CLI."""
+    import extractor as ext
+    oversized = tmp_path / "huge.jsonl"
+    oversized.write_text("x" * (ext.MAX_TRANSCRIPT_BYTES + 1))
+
+    # If subprocess.run is called, the test fails — guard should short-circuit.
+    with patch("extractor.subprocess.run") as mock_run:
+        result = extract_session(oversized)
+        mock_run.assert_not_called()
+
+    assert result.signal["extraction_status"] == "skipped_too_large"
+    assert "exceeds MAX_TRANSCRIPT_BYTES" in result.signal["error"]

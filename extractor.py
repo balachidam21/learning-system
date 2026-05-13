@@ -18,6 +18,9 @@ PROMPT_PATH = ROOT / "prompts" / "extract.v1.txt"
 PROMPT_ID = "extract.v1"
 MODEL = "claude-haiku-4-5"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "/Users/balajichidambaram/.local/bin/claude")
+# Skip transcripts larger than this — exceeds Haiku's 200k context window.
+# Heuristic: ~4 chars/token, target ~180k tokens leaves room for the prompt.
+MAX_TRANSCRIPT_BYTES = 720_000
 CLI_TIMEOUT_SEC = 600
 STATE_PATH = ROOT / "state.json"
 PROJECTS_FILE = ROOT / "projects.txt"
@@ -49,8 +52,20 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
     """Run the extractor on one transcript via the claude CLI.
     Returns signal + lineage records. Does NOT write to disk — caller appends."""
     prompt_text = PROMPT_PATH.read_text()
-    transcript_text = transcript_path.read_text()
     version = _version()
+
+    # Size guard — oversized transcripts exceed the model's context window
+    size_bytes = transcript_path.stat().st_size
+    if size_bytes > MAX_TRANSCRIPT_BYTES:
+        signal = {
+            "session_id": transcript_path.stem,
+            "extraction_status": "skipped_too_large",
+            "error": f"transcript {size_bytes} bytes exceeds MAX_TRANSCRIPT_BYTES={MAX_TRANSCRIPT_BYTES}",
+        }
+        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
+        return ExtractorResult(signal=signal, lineage=lineage)
+
+    transcript_text = transcript_path.read_text()
     tokens_in = 0
     tokens_out = 0
     cost_usd = 0.0
@@ -202,6 +217,13 @@ def _dry_run_scan(claude_root: Path = Path.home() / ".claude",
     est_tokens = total_chars // 4
     print(f"\nEstimated input tokens: ~{est_tokens:,}")
     print("Uses Claude Code subscription auth — no API key needed.")
+
+    oversized = [(p, t, s) for p, t, s in sessions_to_extract if s > MAX_TRANSCRIPT_BYTES]
+    if oversized:
+        print(f"\n⚠ {len(oversized)} transcript(s) exceed MAX_TRANSCRIPT_BYTES ({MAX_TRANSCRIPT_BYTES:,}):")
+        for p, t, s in oversized:
+            print(f"  {t.name} ({s:,} bytes) → will be SKIPPED with status 'skipped_too_large'")
+        print("  To process these, edit MAX_TRANSCRIPT_BYTES or use a larger-context model.")
 
 
 def _main() -> None:
