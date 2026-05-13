@@ -9,11 +9,17 @@ from aggregator import build_report
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
-def _mock_response(payload: dict):
-    r = MagicMock()
-    r.content = [MagicMock(text=json.dumps(payload))]
-    r.usage = MagicMock(input_tokens=500, output_tokens=80)
-    return r
+def _mock_cli(payload: dict):
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": json.dumps(payload),
+        "duration_ms": 100, "usage": {"input_tokens": 500, "output_tokens": 80},
+        "total_cost_usd": 0.002, "session_id": "x", "uuid": "y",
+    })
+    proc.stderr = ""
+    return proc
 
 
 def test_e2e_fixture_to_report(tmp_path):
@@ -28,8 +34,7 @@ def test_e2e_fixture_to_report(tmp_path):
     (log_dir / "PATCH_LIST.md").write_text("")
 
     # Stage 1: extract
-    with patch("extractor._anthropic_client") as client:
-        client.messages.create.return_value = _mock_response(expected)
+    with patch("extractor.subprocess.run", return_value=_mock_cli(expected)):
         result = extract_session(FIXTURES / "tutoring_session.jsonl")
         append_records(result.signal, result.lineage, log_dir)
 

@@ -4,7 +4,7 @@ User-level tooling that auto-extracts signal from Claude Code transcripts and pr
 
 ## Layout
 
-- `extractor.py` — Anthropic-API-backed per-session signal extraction
+- `extractor.py` — per-session signal extraction via the Claude Code CLI
 - `aggregator.py` — weekly markdown + HTML report builder
 - `drift_monitor.py` — monthly system-self-check
 - `lib/` — shared helpers (slug, state)
@@ -20,10 +20,11 @@ User-level tooling that auto-extracts signal from Claude Code transcripts and pr
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env  # then edit .env and fill in ANTHROPIC_API_KEY
 echo "$HOME/Documents/code/ai-inference-track" > projects.txt
-./install_cron.sh   # only after .env is filled in
+./install_cron.sh
 ```
+
+The extractor uses the Claude Code CLI (`claude`) under the hood — no API key needed. Uses your Claude Code subscription auth from `~/.claude/`.
 
 ## Manual usage
 

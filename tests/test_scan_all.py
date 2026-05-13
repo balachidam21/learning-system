@@ -5,11 +5,17 @@ from unittest.mock import patch, MagicMock
 from extractor import scan_all, STATE_PATH
 
 
-def _mock_response(payload):
-    r = MagicMock()
-    r.content = [MagicMock(text=json.dumps(payload))]
-    r.usage = MagicMock(input_tokens=100, output_tokens=50)
-    return r
+def _mock_cli(payload):
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": json.dumps(payload),
+        "duration_ms": 100, "usage": {"input_tokens": 100, "output_tokens": 50},
+        "total_cost_usd": 0.001, "session_id": "x", "uuid": "y",
+    })
+    proc.stderr = ""
+    return proc
 
 
 def test_scan_all_processes_each_opted_in_project(tmp_path, monkeypatch):
@@ -32,8 +38,7 @@ def test_scan_all_processes_each_opted_in_project(tmp_path, monkeypatch):
 
     fake_signal = {"session_id": "sess1", "topics": ["x"], "extraction_status": "ok"}
 
-    with patch("extractor._anthropic_client") as client:
-        client.messages.create.return_value = _mock_response(fake_signal)
+    with patch("extractor.subprocess.run", return_value=_mock_cli(fake_signal)):
         n = scan_all(
             claude_root=claude_root,
             projects_file=projects_txt,
@@ -86,10 +91,13 @@ def test_scan_all_retries_failed_extractions(tmp_path):
 
     state_path = tmp_path / "state.json"
 
-    # First run: API fails — extract_session returns a "failed" stub
+    # First run: CLI fails — extract_session returns a "failed" stub
     from extractor import scan_all
-    with patch("extractor._anthropic_client") as client:
-        client.messages.create.side_effect = RuntimeError("first call fails")
+    bad = MagicMock()
+    bad.returncode = 1
+    bad.stdout = ""
+    bad.stderr = "first call fails"
+    with patch("extractor.subprocess.run", return_value=bad):
         n1 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
 
     assert n1 == 1  # we did attempt the extraction
@@ -97,10 +105,9 @@ def test_scan_all_retries_failed_extractions(tmp_path):
     # Failed extraction must NOT be checkpointed in state["sessions"]
     assert "sess1" not in state.get("sessions", {})
 
-    # Second run: API succeeds — should retry the failed transcript
+    # Second run: CLI succeeds — should retry the failed transcript
     fake_signal = {"session_id": "sess1", "topics": ["x"], "extraction_status": "ok"}
-    with patch("extractor._anthropic_client") as client:
-        client.messages.create.return_value = _mock_response(fake_signal)
+    with patch("extractor.subprocess.run", return_value=_mock_cli(fake_signal)):
         n2 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
 
     assert n2 == 1  # retried, not skipped
