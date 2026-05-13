@@ -5,3 +5,5 @@ __pycache__/
 state.json
 projects.txt
 error.log
+*.egg-info/
+dist/
