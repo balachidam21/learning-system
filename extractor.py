@@ -1,10 +1,14 @@
 """Session transcript → structured signal record."""
+import argparse
 import hashlib
 import json
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any
+
+from lib.slug import transcripts_for_project
+from lib.state import load_state, save_state, needs_extraction
 
 try:
     from anthropic import Anthropic
@@ -16,6 +20,8 @@ ROOT = Path(__file__).parent
 PROMPT_PATH = ROOT / "prompts" / "extract.v1.txt"
 PROMPT_ID = "extract.v1"
 MODEL = "claude-opus-4-7"
+STATE_PATH = ROOT / "state.json"
+PROJECTS_FILE = ROOT / "projects.txt"
 
 
 def _version() -> str:
@@ -99,14 +105,6 @@ def append_records(signal: Dict[str, Any], lineage: Dict[str, Any], log_dir: Pat
         f.write(json.dumps(lineage) + "\n")
 
 
-import argparse
-from lib.slug import transcripts_for_project
-from lib.state import load_state, save_state, needs_extraction
-
-STATE_PATH = ROOT / "state.json"
-PROJECTS_FILE = ROOT / "projects.txt"
-
-
 def _read_projects(projects_file: Path) -> list:
     if not projects_file.exists():
         return []
@@ -131,23 +129,29 @@ def scan_all(claude_root: Path = Path.home() / ".claude",
                 continue
             result = extract_session(transcript)
             append_records(result.signal, result.lineage, log_dir)
-            mtime = datetime.datetime.fromtimestamp(
-                transcript.stat().st_mtime, tz=datetime.timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            state["sessions"][transcript.stem] = {
-                "transcript_path": str(transcript),
-                "last_mtime": mtime,
-                "last_extracted_at": result.lineage["extracted_at"],
-                "extraction_status": result.lineage["extraction_status"],
-            }
             extracted += 1
+            # Only checkpoint successful extractions; failed/malformed will retry next run
+            if result.lineage["extraction_status"] == "ok":
+                mtime = datetime.datetime.fromtimestamp(
+                    transcript.stat().st_mtime, tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                state["sessions"][transcript.stem] = {
+                    "transcript_path": str(transcript),
+                    "last_mtime": mtime,
+                    "last_extracted_at": result.lineage["extracted_at"],
+                    "extraction_status": result.lineage["extraction_status"],
+                }
+                save_state(state_path, state)
     state["extractor_version"] = current_version
     save_state(state_path, state)
     return extracted
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Extract learning signals from Claude Code session transcripts. "
+                    "Use --scan-all for cron mode, or --transcript + --project-log-dir for one-off.",
+    )
     parser.add_argument("--scan-all", action="store_true")
     parser.add_argument("--transcript", type=Path)
     parser.add_argument("--project-log-dir", type=Path)
