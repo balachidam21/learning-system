@@ -11,7 +11,8 @@ User-level tooling that auto-extracts signal from Claude Code transcripts and pr
 - `prompts/` — versioned extraction prompts
 - `fixtures/` — saved transcripts for regression testing
 - `tests/` — pytest suite
-- `cron/` — crontab template
+- `cron/` — crontab template (deprecated)
+- `launchd/` — LaunchAgent plist templates (active scheduler)
 - `state.json` — per-session checkpoint (gitignored)
 - `projects.txt` — opt-in registry, one path per line (gitignored)
 
@@ -21,8 +22,10 @@ User-level tooling that auto-extracts signal from Claude Code transcripts and pr
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 echo "$HOME/Documents/code/ai-inference-track" > projects.txt
-./install_cron.sh
+./install_launchd.sh   # macOS LaunchAgent — has Keychain access for claude CLI auth
 ```
+
+Note: macOS cron cannot access Keychain in its security context, so the claude CLI auth fails. LaunchAgents run in the user session with full Keychain access. `install_cron.sh` is kept as a fallback but deprecated.
 
 The extractor uses the Claude Code CLI (`claude`) under the hood — no API key needed. Uses your Claude Code subscription auth from `~/.claude/`.
 
@@ -57,11 +60,11 @@ for cheap, but capped at ~720KB transcripts).
 
 Bump `VERSION` (semver) when changing extractor prompts or signal schema.
 Version is stamped on every signal lineage record and every aggregated report.
-A version bump triggers automatic re-extraction of all transcripts on next cron run.
+A version bump triggers automatic re-extraction of all transcripts on next scheduled run.
 
 ## Drift monitoring
 
-`drift_monitor.py` runs monthly via cron and produces `log/system-drift/YYYY-Mxx.md`
+`drift_monitor.py` runs monthly via launchd and produces `log/system-drift/YYYY-Mxx.md`
 in each opted-in project. Run `/system-review` in Claude Code on the first
 weekend of each month to walk through findings.
 
