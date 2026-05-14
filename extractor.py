@@ -8,7 +8,7 @@ import subprocess
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 from lib.slug import transcripts_for_project
 from lib.state import load_state, save_state, needs_extraction
@@ -18,9 +18,11 @@ PROMPT_PATH = ROOT / "prompts" / "extract.v1.txt"
 PROMPT_ID = "extract.v1"
 MODEL = "claude-opus-4-7"
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "/Users/balajichidambaram/.local/bin/claude")
-# Opus 4.7 has a 1M-token context window. ~4 chars/token = ~4MB max.
-# Cap at 3.5MB to leave headroom for the prompt + output.
-MAX_TRANSCRIPT_BYTES = 3_500_000
+SINGLE_SHOT_MAX_BYTES = 700_000   # empirically safe under subscription per-request cap
+CHUNK_BYTES = 600_000              # per-chunk size when splitting; leaves headroom
+MAX_CHUNKS = 8                     # absolute ceiling — refuse transcripts requiring >8 chunks
+# Absolute size beyond which we skip even with chunking.
+MAX_TRANSCRIPT_BYTES = MAX_CHUNKS * CHUNK_BYTES  # 4_800_000
 CLI_TIMEOUT_SEC = 600
 STATE_PATH = ROOT / "state.json"
 PROJECTS_FILE = ROOT / "projects.txt"
@@ -48,28 +50,74 @@ class ExtractorResult:
     lineage: Dict[str, Any]
 
 
-def extract_session(transcript_path: Path) -> ExtractorResult:
-    """Run the extractor on one transcript via the claude CLI.
-    Returns signal + lineage records. Does NOT write to disk — caller appends."""
-    prompt_text = PROMPT_PATH.read_text()
-    version = _version()
+def _chunk_transcript(text: str, chunk_bytes: int = CHUNK_BYTES) -> list[str]:
+    """Split transcript into chunks of <= chunk_bytes, breaking on line boundaries.
+    Each chunk is a complete set of JSONL records — never a partial line."""
+    lines = text.splitlines(keepends=True)
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+    for line in lines:
+        line_size = len(line.encode("utf-8"))
+        if current_size + line_size > chunk_bytes and current:
+            chunks.append("".join(current))
+            current = [line]
+            current_size = line_size
+        else:
+            current.append(line)
+            current_size += line_size
+    if current:
+        chunks.append("".join(current))
+    return chunks
 
-    # Size guard — oversized transcripts exceed the model's context window
-    size_bytes = transcript_path.stat().st_size
-    if size_bytes > MAX_TRANSCRIPT_BYTES:
-        signal = {
-            "session_id": transcript_path.stem,
-            "extraction_status": "skipped_too_large",
-            "error": f"transcript {size_bytes} bytes exceeds MAX_TRANSCRIPT_BYTES={MAX_TRANSCRIPT_BYTES}",
-        }
-        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
-        return ExtractorResult(signal=signal, lineage=lineage)
 
-    transcript_text = transcript_path.read_text()
+def _merge_signals(signals: list[Dict[str, Any]], session_id: str) -> Dict[str, Any]:
+    """Combine N per-chunk signals into one record for the whole session.
+    Union sets for topics/skills/artifacts/preferences; concat for markers/deltas;
+    earliest started_at / latest ended_at; sum duration_min."""
+    def uniq(items):
+        seen = set()
+        out = []
+        for x in items:
+            key = json.dumps(x, sort_keys=True) if isinstance(x, dict) else x
+            if key not in seen:
+                seen.add(key)
+                out.append(x)
+        return out
+
+    merged: Dict[str, Any] = {
+        "session_id": session_id,
+        "topics": uniq([t for s in signals for t in s.get("topics", []) or []]),
+        "skills_used": uniq([k for s in signals for k in s.get("skills_used", []) or []]),
+        "tutoring_artifacts": uniq([a for s in signals for a in s.get("tutoring_artifacts", []) or []]),
+        "struggle_markers": [m for s in signals for m in s.get("struggle_markers", []) or []],
+        "click_markers": [m for s in signals for m in s.get("click_markers", []) or []],
+        "patch_list_deltas_inferred": uniq([d for s in signals for d in s.get("patch_list_deltas_inferred", []) or []]),
+        "user_preference_hints": uniq([h for s in signals for h in s.get("user_preference_hints", []) or []]),
+        "extraction_status": "ok",
+    }
+    # started_at = earliest; ended_at = latest
+    starts = [s.get("started_at") for s in signals if s.get("started_at")]
+    ends = [s.get("ended_at") for s in signals if s.get("ended_at")]
+    if starts:
+        merged["started_at"] = min(starts)
+    if ends:
+        merged["ended_at"] = max(ends)
+    # duration: sum if individual durations exist, else compute from start/end if both present
+    durations = [s.get("duration_min", 0) for s in signals if s.get("duration_min")]
+    if durations:
+        merged["duration_min"] = sum(durations)
+    merged["chunked"] = True
+    merged["chunk_count"] = len(signals)
+    return merged
+
+
+def _extract_one_chunk(prompt_text: str, content: str) -> Tuple[Dict[str, Any], int, int, float]:
+    """Run a single claude CLI invocation. Returns (signal_dict, tokens_in, tokens_out, cost_usd).
+    Signal dict has extraction_status set to 'ok', 'failed', or 'malformed'."""
     tokens_in = 0
     tokens_out = 0
     cost_usd = 0.0
-
     try:
         proc = subprocess.run(
             [
@@ -79,18 +127,22 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
                 "--append-system-prompt", prompt_text,
                 "--disable-slash-commands",
             ],
-            input=transcript_text,
+            input=content,
             capture_output=True,
             text=True,
             timeout=CLI_TIMEOUT_SEC,
             check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"claude CLI exit {proc.returncode}: {proc.stderr[:500]}")
+            return ({"extraction_status": "failed",
+                     "error": f"claude CLI exit {proc.returncode}: {proc.stderr[:500]}"},
+                    0, 0, 0.0)
 
         outer = json.loads(proc.stdout)
         if outer.get("is_error"):
-            raise RuntimeError(f"claude CLI reported error: {outer.get('subtype')}")
+            return ({"extraction_status": "failed",
+                     "error": f"claude CLI reported error: {outer.get('result', outer.get('subtype', ''))[:200]}"},
+                    0, 0, 0.0)
 
         result_text = outer.get("result", "")
         usage = outer.get("usage", {})
@@ -98,29 +150,92 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
         tokens_out = usage.get("output_tokens", 0)
         cost_usd = outer.get("total_cost_usd", 0.0)
     except Exception as e:
+        return ({"extraction_status": "failed", "error": str(e)[:500]},
+                0, 0, 0.0)
+
+    try:
+        signal = json.loads(_strip_code_fence(result_text))
+        signal.setdefault("extraction_status", "ok")
+        return (signal, tokens_in, tokens_out, cost_usd)
+    except json.JSONDecodeError as e:
+        return ({"extraction_status": "malformed",
+                 "error": f"non-JSON response: {e}",
+                 "raw_response": result_text[:2000]},
+                tokens_in, tokens_out, cost_usd)
+
+
+def extract_session(transcript_path: Path) -> ExtractorResult:
+    """Run the extractor on one transcript via the claude CLI.
+    Returns signal + lineage records. Does NOT write to disk — caller appends."""
+    prompt_text = PROMPT_PATH.read_text()
+    version = _version()
+
+    size_bytes = transcript_path.stat().st_size
+
+    if size_bytes > MAX_TRANSCRIPT_BYTES:
         signal = {
             "session_id": transcript_path.stem,
-            "extraction_status": "failed",
-            "error": str(e)[:500],
+            "extraction_status": "skipped_too_large",
+            "error": f"transcript {size_bytes} bytes exceeds MAX_TRANSCRIPT_BYTES={MAX_TRANSCRIPT_BYTES} (would need >{MAX_CHUNKS} chunks)",
         }
+        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
+        return ExtractorResult(signal=signal, lineage=lineage)
+
+    transcript_text = transcript_path.read_text()
+
+    if size_bytes <= SINGLE_SHOT_MAX_BYTES:
+        # Single-shot path (existing behavior)
+        signal, tokens_in, tokens_out, cost_usd = _extract_one_chunk(prompt_text, transcript_text)
+        signal.setdefault("session_id", transcript_path.stem)
         lineage = _lineage(transcript_path, signal, version, prompt_text,
                            tokens_in, tokens_out, cost_usd)
         return ExtractorResult(signal=signal, lineage=lineage)
 
-    # Stage 2: parse the model's response as JSON
-    try:
-        signal = json.loads(_strip_code_fence(result_text))
-        signal.setdefault("extraction_status", "ok")
-    except json.JSONDecodeError as e:
+    # Chunked path
+    chunks = _chunk_transcript(transcript_text)
+    if len(chunks) > MAX_CHUNKS:
         signal = {
             "session_id": transcript_path.stem,
-            "extraction_status": "malformed",
-            "error": f"non-JSON response: {e}",
-            "raw_response": result_text[:2000],
+            "extraction_status": "skipped_too_large",
+            "error": f"would need {len(chunks)} chunks, max is {MAX_CHUNKS}",
         }
+        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
+        return ExtractorResult(signal=signal, lineage=lineage)
+
+    chunk_signals = []
+    total_tokens_in = 0
+    total_tokens_out = 0
+    total_cost = 0.0
+    any_failed = False
+    for i, chunk in enumerate(chunks):
+        # Hint to the model which chunk this is (helps it not over-claim duration etc.)
+        prefixed = f"[Chunk {i+1} of {len(chunks)} from session]\n{chunk}"
+        chunk_sig, ti, to, c = _extract_one_chunk(prompt_text, prefixed)
+        total_tokens_in += ti
+        total_tokens_out += to
+        total_cost += c
+        if chunk_sig.get("extraction_status") in ("failed", "malformed"):
+            any_failed = True
+        chunk_signals.append(chunk_sig)
+
+    # Filter out failed chunks before merging — keep only the ones that produced real data
+    ok_signals = [s for s in chunk_signals if s.get("extraction_status") == "ok"]
+    if not ok_signals:
+        signal = {
+            "session_id": transcript_path.stem,
+            "extraction_status": "failed",
+            "error": f"all {len(chunks)} chunks failed extraction",
+        }
+    else:
+        signal = _merge_signals(ok_signals, transcript_path.stem)
+        if any_failed:
+            signal["partial"] = True
+            signal["chunk_failures"] = sum(1 for s in chunk_signals if s.get("extraction_status") != "ok")
 
     lineage = _lineage(transcript_path, signal, version, prompt_text,
-                       tokens_in, tokens_out, cost_usd)
+                       total_tokens_in, total_tokens_out, total_cost)
+    lineage["chunked"] = True
+    lineage["chunk_count"] = len(chunks)
     return ExtractorResult(signal=signal, lineage=lineage)
 
 
@@ -218,12 +333,19 @@ def _dry_run_scan(claude_root: Path = Path.home() / ".claude",
     print(f"\nEstimated input tokens: ~{est_tokens:,}")
     print("Uses Claude Code subscription auth — no API key needed.")
 
-    oversized = [(p, t, s) for p, t, s in sessions_to_extract if s > MAX_TRANSCRIPT_BYTES]
-    if oversized:
-        print(f"\n⚠ {len(oversized)} transcript(s) exceed MAX_TRANSCRIPT_BYTES ({MAX_TRANSCRIPT_BYTES:,}):")
-        for p, t, s in oversized:
-            print(f"  {t.name} ({s:,} bytes) → will be SKIPPED with status 'skipped_too_large'")
-        print("  To process these, edit MAX_TRANSCRIPT_BYTES or use a larger-context model.")
+    single_shot = [(p, t, s) for p, t, s in sessions_to_extract if s <= SINGLE_SHOT_MAX_BYTES]
+    chunked = [(p, t, s) for p, t, s in sessions_to_extract if SINGLE_SHOT_MAX_BYTES < s <= MAX_TRANSCRIPT_BYTES]
+    skipped = [(p, t, s) for p, t, s in sessions_to_extract if s > MAX_TRANSCRIPT_BYTES]
+
+    if chunked:
+        print(f"\n{len(chunked)} transcript(s) will be CHUNKED:")
+        for p, t, s in chunked:
+            est_chunks = (s // CHUNK_BYTES) + 1
+            print(f"  {t.name} ({s:,} bytes) → ~{est_chunks} chunks")
+    if skipped:
+        print(f"\n⚠ {len(skipped)} transcript(s) too large even for chunking (>{MAX_TRANSCRIPT_BYTES:,} bytes):")
+        for p, t, s in skipped:
+            print(f"  {t.name} ({s:,} bytes) → SKIPPED")
 
 
 def _main() -> None:
