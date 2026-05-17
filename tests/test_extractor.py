@@ -336,3 +336,38 @@ def test_chunked_lineage_records_chunk_statuses(tmp_path, monkeypatch):
     assert res.lineage["chunk_errors"]            # non-empty
     assert res.lineage["chunked"] is True
     assert res.signal["extraction_status"] == "ok" and res.signal.get("partial") is True
+
+
+def test_chunked_all_fail_no_signal_error_and_meta_has_evidence(tmp_path, monkeypatch):
+    tx = tmp_path / "sess-allfail.jsonl"
+    tx.write_text('{"role":"user","content":"line one here"}\n'
+                  '{"role":"assistant","content":"line two here"}\n')
+    monkeypatch.setattr("extractor.SINGLE_SHOT_MAX_BYTES", 1)
+    monkeypatch.setattr("extractor.CHUNK_BYTES", 1)
+    seq = [_outer("boom one", is_error=True, rc=1),
+           _outer("boom two", is_error=True, rc=1)]
+    calls = {"n": 0}
+    def fake_run(*a, **k):
+        r = seq[calls["n"]]; calls["n"] += 1; return r
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    res = extract_session(tx)
+    assert res.signal["extraction_status"] == "failed"
+    assert "error" not in res.signal                       # Fix A contract
+    assert res.lineage["chunk_statuses"] == ["failed", "failed"]
+    assert res.lineage["chunk_errors"]                      # non-empty
+    assert "all 2 chunks failed" in res.lineage["error"]
+    assert res.lineage["chunked"] is True
+
+    from extractor import append_records
+    append_records(res.signal, res.lineage, tmp_path)
+    sj = tmp_path / "signal.jsonl"
+    assert (not sj.exists()) or sj.read_text() == ""
+    assert (tmp_path / "signal.meta.jsonl").read_text().strip()
+
+
+def test_lineage_raw_response_truncated(tmp_path):
+    p = _outer("X" * 3000)   # non-JSON → malformed; raw_response captured
+    with patch("extractor.subprocess.run", return_value=p):
+        res = extract_session(FIXTURES / "tutoring_session.jsonl")
+    assert res.lineage["extraction_status"] == "malformed"
+    assert len(res.lineage["raw_response"]) == 2000

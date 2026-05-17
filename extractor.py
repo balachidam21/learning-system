@@ -284,12 +284,13 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
     # Filter out failed chunks before merging — keep only the ones that produced real data
     ok_signals = [s for s in chunk_signals if s.get("extraction_status") == "ok"]
     if not ok_signals:
+        all_fail_error = f"all {len(chunks)} chunks failed extraction"
         signal = {
             "session_id": transcript_path.stem,
             "extraction_status": "failed",
-            "error": f"all {len(chunks)} chunks failed extraction",
         }
     else:
+        all_fail_error = None
         signal = _merge_signals(ok_signals, transcript_path.stem)
         if any_failed:
             signal["partial"] = True
@@ -305,7 +306,7 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
 
     lineage = _lineage(transcript_path, signal, version, prompt_text,
                         total_tokens_in, total_tokens_out, total_cost,
-                        error=signal.get("error"), stop_reason=agg_stop,
+                        error=all_fail_error, stop_reason=agg_stop,
                         api_error_status=agg_api_err, attempts=agg_attempts,
                         chunk_statuses=chunk_statuses, chunk_errors=chunk_errors)
     lineage["chunked"] = True
