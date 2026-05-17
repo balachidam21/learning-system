@@ -8,7 +8,7 @@ import subprocess
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 
 from lib.slug import transcripts_for_project
 from lib.state import load_state, save_state, needs_extraction
@@ -191,7 +191,8 @@ def _extract_one_chunk(prompt_text: str, content: str) -> "CallResult":
                           stop_reason=stop_reason, api_error_status=api_error_status)
     if not is_dict:
         return CallResult(signal={"extraction_status": "failed"},
-                          error=f"unparseable CLI stdout: {proc.stdout[:300]}",
+                          error=f"claude CLI exit {proc.returncode}, unparseable stdout: "
+                                f"{(proc.stderr or proc.stdout)[:400]}",
                           stop_reason=stop_reason, api_error_status=api_error_status)
     if outer.get("is_error"):
         detail = str(outer.get("result") or outer.get("subtype") or "")

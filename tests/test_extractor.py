@@ -271,3 +271,19 @@ def test_callresult_malformed_captures_raw():
         cr = _extract_one_chunk("PROMPT", "content")
     assert cr.signal["extraction_status"] == "malformed"
     assert cr.raw_response == "I cannot do that"
+
+
+def test_callresult_nonzero_exit_unparseable_stdout():
+    p = MagicMock(); p.returncode = 1; p.stdout = "this is not json"; p.stderr = "boom from cli"
+    with patch("extractor.subprocess.run", return_value=p):
+        cr = _extract_one_chunk("PROMPT", "content")
+    assert cr.signal["extraction_status"] == "failed"
+    assert "boom from cli" in cr.error
+
+
+def test_callresult_subprocess_exception():
+    import subprocess as _sp
+    with patch("extractor.subprocess.run", side_effect=_sp.TimeoutExpired(cmd="claude", timeout=600)):
+        cr = _extract_one_chunk("PROMPT", "content")
+    assert cr.signal["extraction_status"] == "failed"
+    assert cr.error  # non-empty
