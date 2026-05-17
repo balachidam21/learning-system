@@ -3,8 +3,10 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
+import time
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,6 +222,32 @@ def _extract_one_chunk(prompt_text: str, content: str) -> "CallResult":
                       api_error_status=api_error_status)
 
 
+# Deterministic context-overflow signatures — retrying these only wastes spend
+_OVERFLOW_RE = re.compile(r"too long|context (length|window)|exceeds? .*token", re.I)
+
+
+def _classify_retryable(cr: "CallResult") -> bool:
+    """True if the failure looks transient and worth retrying within this run."""
+    if cr.signal.get("extraction_status") not in ("failed", "malformed"):
+        return False
+    if cr.api_error_status == 400 and cr.error and _OVERFLOW_RE.search(cr.error):
+        return False
+    return True
+
+
+def _extract_with_retry(prompt_text: str, content: str,
+                        max_retries: int = 2) -> "CallResult":
+    """Call the extractor, retrying transient failures with capped backoff."""
+    cr = _extract_one_chunk(prompt_text, content)
+    attempt = 1
+    while attempt <= max_retries and _classify_retryable(cr):
+        time.sleep(min(2 * (4 ** (attempt - 1)) + random.uniform(0, 1), 30))
+        cr = _extract_one_chunk(prompt_text, content)
+        attempt += 1
+    cr.attempts = attempt
+    return cr
+
+
 def extract_session(transcript_path: Path) -> ExtractorResult:
     """Run the extractor on one transcript via the claude CLI.
     Returns signal + lineage records. Does NOT write to disk — caller appends."""
@@ -242,7 +270,7 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
 
     if size_bytes <= SINGLE_SHOT_MAX_BYTES:
         # Single-shot path
-        cr = _extract_one_chunk(prompt_text, transcript_text)
+        cr = _extract_with_retry(prompt_text, transcript_text)
         signal = cr.signal
         signal.setdefault("session_id", transcript_path.stem)
         lineage = _lineage(transcript_path, signal, version, prompt_text,
@@ -272,7 +300,7 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
     for i, chunk in enumerate(chunks):
         # Hint to the model which chunk this is (helps it not over-claim duration etc.)
         prefixed = f"[Chunk {i+1} of {len(chunks)} from session]\n{chunk}"
-        cr = _extract_one_chunk(prompt_text, prefixed)
+        cr = _extract_with_retry(prompt_text, prefixed)
         total_tokens_in += cr.tokens_in
         total_tokens_out += cr.tokens_out
         total_cost += cr.cost_usd

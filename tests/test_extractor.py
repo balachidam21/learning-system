@@ -60,7 +60,8 @@ def test_extract_handles_cli_nonzero_exit():
     bad.returncode = 1
     bad.stdout = ""
     bad.stderr = "simulated CLI failure"
-    with patch("extractor.subprocess.run", return_value=bad):
+    with patch("extractor.subprocess.run", return_value=bad), \
+         patch("extractor.time.sleep"):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "failed"
     assert "simulated CLI failure" in result.lineage["error"]
@@ -79,7 +80,8 @@ def test_extract_handles_non_json_response():
         "total_cost_usd": 0.001, "session_id": "x", "uuid": "y",
     })
     proc.stderr = ""
-    with patch("extractor.subprocess.run", return_value=proc):
+    with patch("extractor.subprocess.run", return_value=proc), \
+         patch("extractor.time.sleep"):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "malformed"
     assert "raw_response" in result.lineage
@@ -97,7 +99,8 @@ def test_extract_handles_cli_error_field():
         "total_cost_usd": 0.0, "session_id": "x", "uuid": "y",
     })
     proc.stderr = ""
-    with patch("extractor.subprocess.run", return_value=proc):
+    with patch("extractor.subprocess.run", return_value=proc), \
+         patch("extractor.time.sleep"):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "failed"
 
@@ -292,7 +295,8 @@ def test_callresult_subprocess_exception():
 
 def test_lineage_records_failure_evidence():
     p = _outer("server exploded", is_error=True, api_err=500, rc=1, stderr="boom")
-    with patch("extractor.subprocess.run", return_value=p):
+    with patch("extractor.subprocess.run", return_value=p), \
+         patch("extractor.time.sleep"):
         res = extract_session(FIXTURES / "tutoring_session.jsonl")
     lin = res.lineage
     assert lin["extraction_status"] == "failed"
@@ -325,8 +329,8 @@ def test_chunked_lineage_records_chunk_statuses(tmp_path, monkeypatch):
                   '{"role":"assistant","content":"line two here"}\n')
     monkeypatch.setattr("extractor.SINGLE_SHOT_MAX_BYTES", 1)
     monkeypatch.setattr("extractor.CHUNK_BYTES", 1)
-    seq = [_outer("boom", is_error=True, rc=1),          # chunk 1 fails
-           _outer('{"topics": ["t"]}')]                  # chunk 2 ok
+    seq = [_outer("prompt is too long", is_error=True, api_err=400, rc=1),  # chunk 1 non-retryable fail
+           _outer('{"topics": ["t"]}')]                                    # chunk 2 ok
     calls = {"n": 0}
     def fake_run(*a, **k):
         r = seq[calls["n"]]; calls["n"] += 1; return r
@@ -344,12 +348,12 @@ def test_chunked_all_fail_no_signal_error_and_meta_has_evidence(tmp_path, monkey
                   '{"role":"assistant","content":"line two here"}\n')
     monkeypatch.setattr("extractor.SINGLE_SHOT_MAX_BYTES", 1)
     monkeypatch.setattr("extractor.CHUNK_BYTES", 1)
-    seq = [_outer("boom one", is_error=True, rc=1),
-           _outer("boom two", is_error=True, rc=1)]
+    p_fail = _outer("prompt is too long", is_error=True, api_err=400, rc=1)  # non-retryable
     calls = {"n": 0}
     def fake_run(*a, **k):
-        r = seq[calls["n"]]; calls["n"] += 1; return r
+        calls["n"] += 1; return p_fail
     monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
     res = extract_session(tx)
     assert res.signal["extraction_status"] == "failed"
     assert "error" not in res.signal                       # Fix A contract
@@ -367,7 +371,60 @@ def test_chunked_all_fail_no_signal_error_and_meta_has_evidence(tmp_path, monkey
 
 def test_lineage_raw_response_truncated(tmp_path):
     p = _outer("X" * 3000)   # non-JSON → malformed; raw_response captured
-    with patch("extractor.subprocess.run", return_value=p):
+    with patch("extractor.subprocess.run", return_value=p), \
+         patch("extractor.time.sleep"):
         res = extract_session(FIXTURES / "tutoring_session.jsonl")
     assert res.lineage["extraction_status"] == "malformed"
     assert len(res.lineage["raw_response"]) == 2000
+
+
+from extractor import _classify_retryable, _extract_with_retry
+
+
+def test_retryable_classification():
+    fail = CallResult(signal={"extraction_status": "failed"})
+    assert _classify_retryable(fail) is True
+    malformed = CallResult(signal={"extraction_status": "malformed"})
+    assert _classify_retryable(malformed) is True
+    overflow = CallResult(signal={"extraction_status": "failed"},
+                          api_error_status=400, error="prompt is too long")
+    assert _classify_retryable(overflow) is False
+    ok = CallResult(signal={"extraction_status": "ok"})
+    assert _classify_retryable(ok) is False
+
+
+def test_retry_recovers_transient(monkeypatch):
+    seq = [_outer("boom", is_error=True, rc=1), _outer('{"topics": ["ok"]}')]
+    calls = {"n": 0}
+    def fake_run(*a, **k):
+        r = seq[calls["n"]]; calls["n"] += 1; return r
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
+    cr = _extract_with_retry("P", "c", max_retries=2)
+    assert cr.signal["extraction_status"] == "ok"
+    assert cr.attempts == 2
+
+
+def test_retry_exhausts_then_fails(monkeypatch):
+    p = _outer("transient boom", is_error=True, rc=1)   # generic, retryable
+    n = {"c": 0}
+    def fake_run(*a, **k):
+        n["c"] += 1; return p
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
+    cr = _extract_with_retry("P", "c", max_retries=2)
+    assert cr.signal["extraction_status"] == "failed"
+    assert cr.attempts == 3          # 1 initial + 2 retries
+    assert n["c"] == 3
+
+
+def test_retry_skips_overflow(monkeypatch):
+    p = _outer("prompt is too long", is_error=True, api_err=400, rc=1)
+    n = {"c": 0}
+    def fake_run(*a, **k):
+        n["c"] += 1; return p
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
+    cr = _extract_with_retry("P", "c", max_retries=2)
+    assert cr.signal["extraction_status"] == "failed"
+    assert n["c"] == 1               # overflow is non-retryable → one attempt only
