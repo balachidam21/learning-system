@@ -29,6 +29,8 @@ PROJECTS_FILE = ROOT / "projects.txt"
 
 # Strip ```json ... ``` fences the model often wraps around JSON output
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+# Same fence body as _FENCE_RE but unanchored — finds a fenced block amid prose
+_FENCE_SEARCH_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def _version() -> str:
@@ -45,16 +47,20 @@ def _strip_code_fence(s: str) -> str:
 
 
 def _robust_json_parse(text: str) -> Optional[Dict[str, Any]]:
-    """Layered: bare → fenced-anywhere → outermost {...}. Returns dict or None."""
+    """Layered: bare → fenced-anywhere → outermost {...}. Returns dict or None.
+
+    Known limitation: a non-JSON '{' appearing before the real object defeats
+    the first-'{'/last-'}' slice heuristic.
+    """
     if not text or not text.strip():
         return None
     s = text.strip()
     candidates = [s]
-    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+    fence = _FENCE_SEARCH_RE.search(s)
     if fence:
         candidates.append(fence.group(1).strip())
     i, j = s.find("{"), s.rfind("}")
-    if i != -1 and j != -1 and j > i:
+    if i != -1 and j != -1 and j > i and s[i:j + 1] != s:
         candidates.append(s[i:j + 1])
     for c in candidates:
         try:
@@ -177,6 +183,8 @@ def _extract_one_chunk(prompt_text: str, content: str) -> Tuple[Dict[str, Any], 
 
     parsed = _robust_json_parse(result_text)
     if parsed is None:
+        # raw_response (≤2000 chars) is the diagnostic trail, intentionally replacing
+        # the old JSONDecodeError string — keeps context without unbounded growth.
         return ({"extraction_status": "malformed",
                  "error": "non-JSON response",
                  "raw_response": result_text[:2000]},

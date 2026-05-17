@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from extractor import extract_session, ExtractorResult
+from extractor import extract_session, ExtractorResult, _robust_json_parse
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -208,8 +208,6 @@ def test_extract_skips_beyond_max_chunks(tmp_path):
     assert result.signal["extraction_status"] == "skipped_too_large"
 
 
-from extractor import _robust_json_parse
-
 def test_robust_parse_bare():
     assert _robust_json_parse('{"a": 1}') == {"a": 1}
 
@@ -226,3 +224,13 @@ def test_robust_parse_garbage_returns_none():
 
 def test_robust_parse_rejects_non_dict():
     assert _robust_json_parse('[1, 2, 3]') is None
+
+
+def test_robust_parse_fenced_with_prose_both_sides():
+    txt = 'Sure, here is the result:\n```json\n{"a": 1}\n```\nLet me know if you need more.'
+    assert _robust_json_parse(txt) == {"a": 1}
+
+
+def test_robust_parse_multiple_objects_returns_none():
+    # documents actual behavior: first-{ to last-} spans both → invalid → None
+    assert _robust_json_parse('{"first": 1} {"second": 2}') is None
