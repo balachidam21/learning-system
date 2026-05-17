@@ -20,28 +20,6 @@ def test_coverage_gap_detected(tmp_path):
     assert "2 manual" in text or "missed" in text.lower()
 
 
-def test_failure_rate_reported(tmp_path):
-    # Under D2, failure rate comes from signal.meta.jsonl, not signal.jsonl.
-    # signal.jsonl has only the ok record; failed record lives only in meta.
-    project_dir = tmp_path
-    (project_dir / "log").mkdir()
-    (project_dir / "log" / "DAILY_LOG.md").write_text("")
-    # signal.jsonl: ok record only (production reality post-Task-3)
-    (project_dir / "log" / "signal.jsonl").write_text(
-        json.dumps({"session_id": "b", "started_at": "2026-05-02T19:00:00Z",
-                    "extraction_status": "ok"}) + "\n"
-    )
-    # signal.meta.jsonl: the complete ledger (1 failed + 1 ok)
-    (project_dir / "log" / "signal.meta.jsonl").write_text(
-        json.dumps({"session_id": "a", "extracted_at": "2026-05-01T19:00:00Z",
-                    "extraction_status": "failed", "error": "timeout"}) + "\n"
-        + json.dumps({"session_id": "b", "extracted_at": "2026-05-02T19:00:00Z",
-                      "extraction_status": "ok"}) + "\n"
-    )
-    out = build_drift_report(project_dir, month="2026-05")
-    assert "Failure rate" in out.read_text()
-    assert "50" in out.read_text() or "1/2" in out.read_text()
-
 
 def test_invalid_date_header_does_not_crash(tmp_path):
     """A malformed date in DAILY_LOG.md should be silently skipped, not crash."""
@@ -108,3 +86,27 @@ def test_drift_failure_rate_from_meta(tmp_path):
     # If failure rate were sourced from signal.jsonl it would be 0/1=0%, not 1/2=50%
     assert "1/2" in text
     assert "50.0%" in text
+
+
+def test_skipped_too_large_excluded_from_failure_rate(tmp_path):
+    project_dir = tmp_path
+    (project_dir / "log").mkdir()
+    (project_dir / "log" / "DAILY_LOG.md").write_text("")
+    (project_dir / "log" / "signal.jsonl").write_text(
+        json.dumps({"session_id": "ok1", "started_at": "2026-05-03T19:00:00Z",
+                    "extraction_status": "ok"}) + "\n")
+    (project_dir / "log" / "signal.meta.jsonl").write_text(
+        json.dumps({"session_id": "ok1", "extracted_at": "2026-05-03T19:30:00Z",
+                    "extraction_status": "ok"}) + "\n"
+        + json.dumps({"session_id": "f1", "extracted_at": "2026-05-04T02:00:00Z",
+                      "extraction_status": "failed", "error": "boom"}) + "\n"
+        + json.dumps({"session_id": "big", "extracted_at": "2026-05-05T02:00:00Z",
+                      "extraction_status": "skipped_too_large"}) + "\n")
+    out = build_drift_report(project_dir, month="2026-05")
+    text = out.read_text()
+    # skipped excluded from BOTH numerator and denominator → 1 failed / 2 considered
+    assert "1/2" in text and "50.0%" in text
+    assert "1 transcript(s) skipped" in text
+    # the misleading 'review error.log' recommendation must NOT fire at 50%>10%? It SHOULD
+    # fire (genuine 50% failure) — but verify it's driven by the 50%, not by the skip:
+    assert "Failure rate above" in text

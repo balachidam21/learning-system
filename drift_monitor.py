@@ -134,12 +134,31 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
 
     missing_auto = sorted(d for d in manual_dates if d not in auto_dates)
     extra_auto = sorted(d for d in auto_dates if d not in set(manual_dates))
-    failures = [a for a in attempts if a.get("extraction_status") != "ok"]
-    failure_rate = (len(failures) / len(attempts) * 100) if attempts else 0
+    skipped = [a for a in attempts if a.get("extraction_status") == "skipped_too_large"]
+    considered = [a for a in attempts if a.get("extraction_status") != "skipped_too_large"]
+    failures = [a for a in considered if a.get("extraction_status") != "ok"]
+    failure_rate = (len(failures) / len(considered) * 100) if considered else 0
 
     out_dir = project_dir / "log" / "system-drift"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{year}-M{m:02d}.md"
+
+    if not attempts:
+        failure_line = "- No meta ledger found for this month — failure rate unavailable."
+    elif not considered:
+        failure_line = f"- 0/0 extractions failed/malformed — all {len(skipped)} attempt(s) were skipped (too large)."
+    else:
+        failure_line = f"- {len(failures)}/{len(considered)} extractions failed/malformed ({failure_rate:.1f}%)"
+
+    coverage_lines = [
+        f"- {len(manual_dates)} manual log entries, {len(signals)} extracted records",
+        f"- {len(missing_auto)} manual day(s) with no extracted signal: " +
+        (", ".join(d.isoformat() for d in missing_auto) if missing_auto else "(none)"),
+        f"- {len(extra_auto)} extracted day(s) with no manual entry: " +
+        (", ".join(d.isoformat() for d in extra_auto) if extra_auto else "(none)"),
+    ]
+    if skipped:
+        coverage_lines.append(f"- {len(skipped)} transcript(s) skipped this month (too large to extract)")
 
     body = [
         f"# System Drift Report — {month}",
@@ -147,14 +166,10 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
         f"**Generated:** {datetime.date.today().isoformat()} by drift_monitor v{DRIFT_VERSION}",
         f"",
         f"## Coverage",
-        f"- {len(manual_dates)} manual log entries, {len(signals)} extracted records",
-        f"- {len(missing_auto)} manual day(s) with no extracted signal: " +
-        (", ".join(d.isoformat() for d in missing_auto) if missing_auto else "(none)"),
-        f"- {len(extra_auto)} extracted day(s) with no manual entry: " +
-        (", ".join(d.isoformat() for d in extra_auto) if extra_auto else "(none)"),
+    ] + coverage_lines + [
         f"",
         f"## Failure rate",
-        f"- {len(failures)}/{len(attempts)} extractions failed/malformed ({failure_rate:.1f}%)",
+        failure_line,
         f"",
         f"## Recommendations",
     ]

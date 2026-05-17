@@ -109,6 +109,7 @@ def test_scan_all_failed_not_in_signal(tmp_path):
     meta_path = log_dir / "signal.meta.jsonl"
     assert meta_path.exists()
     meta_records = [json.loads(line) for line in meta_path.read_text().splitlines() if line.strip()]
+    # scan_all writes meta once per session (not once per retry attempt), so a failed extraction yields exactly one meta record
     assert len(meta_records) == 1
     assert meta_records[0]["extraction_status"] == "failed"
     assert "error" in meta_records[0]

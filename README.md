@@ -76,7 +76,7 @@ weekend of each month to walk through findings.
 
 ## Changelog
 
-- `0.2.0` — extraction reliability: failure observability in meta (error/raw_response/stop_reason/api_error_status/attempts), bounded per-call retry, robust JSON parse, non-ok kept out of signal.jsonl; drift_monitor failure-rate now meta-sourced.
+- `0.2.0` — extraction reliability: failure observability in meta (error/raw_response/stop_reason/api_error_status/attempts), bounded per-call retry, robust JSON parse, non-ok kept out of signal.jsonl; drift_monitor failure-rate now meta-sourced and excludes skipped_too_large; aggregator weekly footer reports extracted-signal count.
 - `0.1.0` — initial release
 
 ## See also
