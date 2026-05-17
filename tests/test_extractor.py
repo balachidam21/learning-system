@@ -63,7 +63,8 @@ def test_extract_handles_cli_nonzero_exit():
     with patch("extractor.subprocess.run", return_value=bad):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "failed"
-    assert "simulated CLI failure" in result.signal["error"]
+    assert "simulated CLI failure" in result.lineage["error"]
+    assert "error" not in result.signal
 
 
 def test_extract_handles_non_json_response():
@@ -81,7 +82,7 @@ def test_extract_handles_non_json_response():
     with patch("extractor.subprocess.run", return_value=proc):
         result = extract_session(transcript)
     assert result.signal["extraction_status"] == "malformed"
-    assert "raw_response" in result.signal
+    assert "raw_response" in result.lineage
 
 
 def test_extract_handles_cli_error_field():
@@ -287,3 +288,51 @@ def test_callresult_subprocess_exception():
         cr = _extract_one_chunk("PROMPT", "content")
     assert cr.signal["extraction_status"] == "failed"
     assert cr.error  # non-empty
+
+
+def test_lineage_records_failure_evidence():
+    p = _outer("server exploded", is_error=True, api_err=500, rc=1, stderr="boom")
+    with patch("extractor.subprocess.run", return_value=p):
+        res = extract_session(FIXTURES / "tutoring_session.jsonl")
+    lin = res.lineage
+    assert lin["extraction_status"] == "failed"
+    assert lin["error"] and lin["api_error_status"] == 500
+    assert "stop_reason" in lin and "attempts" in lin
+    assert "error" not in res.signal
+
+
+def test_append_records_skips_signal_for_non_ok(tmp_path):
+    from extractor import append_records
+    append_records({"session_id": "s1", "extraction_status": "failed"},
+                   {"session_id": "s1", "extraction_status": "failed"}, tmp_path)
+    sj = tmp_path / "signal.jsonl"
+    assert (not sj.exists()) or sj.read_text() == ""
+    assert (tmp_path / "signal.meta.jsonl").read_text().strip()
+
+
+def test_append_records_writes_signal_for_ok(tmp_path):
+    from extractor import append_records
+    append_records({"session_id": "s2", "extraction_status": "ok", "topics": ["t"]},
+                   {"session_id": "s2", "extraction_status": "ok"}, tmp_path)
+    assert (tmp_path / "signal.jsonl").read_text().strip()
+    assert (tmp_path / "signal.meta.jsonl").read_text().strip()
+
+
+def test_chunked_lineage_records_chunk_statuses(tmp_path, monkeypatch):
+    # Force the chunked path on a tiny 2-line transcript: each line its own chunk.
+    tx = tmp_path / "sess-chunked.jsonl"
+    tx.write_text('{"role":"user","content":"line one here"}\n'
+                  '{"role":"assistant","content":"line two here"}\n')
+    monkeypatch.setattr("extractor.SINGLE_SHOT_MAX_BYTES", 1)
+    monkeypatch.setattr("extractor.CHUNK_BYTES", 1)
+    seq = [_outer("boom", is_error=True, rc=1),          # chunk 1 fails
+           _outer('{"topics": ["t"]}')]                  # chunk 2 ok
+    calls = {"n": 0}
+    def fake_run(*a, **k):
+        r = seq[calls["n"]]; calls["n"] += 1; return r
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    res = extract_session(tx)
+    assert res.lineage["chunk_statuses"] == ["failed", "ok"]
+    assert res.lineage["chunk_errors"]            # non-empty
+    assert res.lineage["chunked"] is True
+    assert res.signal["extraction_status"] == "ok" and res.signal.get("partial") is True

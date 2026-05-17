@@ -234,7 +234,8 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
             "extraction_status": "skipped_too_large",
             "error": f"transcript {size_bytes} bytes exceeds MAX_TRANSCRIPT_BYTES={MAX_TRANSCRIPT_BYTES} (would need >{MAX_CHUNKS} chunks)",
         }
-        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
+        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0,
+                           error=signal["error"])
         return ExtractorResult(signal=signal, lineage=lineage)
 
     transcript_text = transcript_path.read_text()
@@ -243,24 +244,25 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
         # Single-shot path
         cr = _extract_one_chunk(prompt_text, transcript_text)
         signal = cr.signal
-        if cr.error and "error" not in signal:
-            signal["error"] = cr.error
-        if cr.raw_response and "raw_response" not in signal:
-            signal["raw_response"] = cr.raw_response
         signal.setdefault("session_id", transcript_path.stem)
         lineage = _lineage(transcript_path, signal, version, prompt_text,
-                           cr.tokens_in, cr.tokens_out, cr.cost_usd)
+                           cr.tokens_in, cr.tokens_out, cr.cost_usd,
+                           error=cr.error, raw_response=cr.raw_response,
+                           stop_reason=cr.stop_reason,
+                           api_error_status=cr.api_error_status,
+                           attempts=cr.attempts)
         return ExtractorResult(signal=signal, lineage=lineage)
 
-    # Chunked path
-    chunks = _chunk_transcript(transcript_text)
+    # Chunked path — pass module var explicitly so monkeypatching in tests takes effect
+    chunks = _chunk_transcript(transcript_text, CHUNK_BYTES)
     if len(chunks) > MAX_CHUNKS:
         signal = {
             "session_id": transcript_path.stem,
             "extraction_status": "skipped_too_large",
             "error": f"would need {len(chunks)} chunks, max is {MAX_CHUNKS}",
         }
-        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
+        lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0,
+                           error=signal["error"])
         return ExtractorResult(signal=signal, lineage=lineage)
 
     chunk_results = []
@@ -293,8 +295,19 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
             signal["partial"] = True
             signal["chunk_failures"] = sum(1 for s in chunk_signals if s.get("extraction_status") != "ok")
 
+    chunk_statuses = [cr.signal.get("extraction_status") for cr in chunk_results]
+    chunk_errors = [cr.error for cr in chunk_results if cr.error]
+    agg_attempts = max((cr.attempts for cr in chunk_results), default=1)
+    agg_api_err = next((cr.api_error_status for cr in chunk_results
+                        if cr.api_error_status is not None), None)
+    agg_stop = next((cr.stop_reason for cr in chunk_results
+                     if cr.stop_reason is not None), None)
+
     lineage = _lineage(transcript_path, signal, version, prompt_text,
-                       total_tokens_in, total_tokens_out, total_cost)
+                        total_tokens_in, total_tokens_out, total_cost,
+                        error=signal.get("error"), stop_reason=agg_stop,
+                        api_error_status=agg_api_err, attempts=agg_attempts,
+                        chunk_statuses=chunk_statuses, chunk_errors=chunk_errors)
     lineage["chunked"] = True
     lineage["chunk_count"] = len(chunks)
     return ExtractorResult(signal=signal, lineage=lineage)
@@ -302,8 +315,12 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
 
 def _lineage(transcript_path: Path, signal: Dict[str, Any], version: str,
              prompt_text: str, tokens_in: int, tokens_out: int,
-             cost_usd: float) -> Dict[str, Any]:
-    return {
+             cost_usd: float, *, error: Optional[str] = None,
+             raw_response: Optional[str] = None, stop_reason: Optional[Any] = None,
+             api_error_status: Optional[Any] = None, attempts: int = 1,
+             chunk_statuses: Optional[list] = None,
+             chunk_errors: Optional[list] = None) -> Dict[str, Any]:
+    lin = {
         "session_id": signal.get("session_id", transcript_path.stem),
         "extracted_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "extractor_version": version,
@@ -315,13 +332,28 @@ def _lineage(transcript_path: Path, signal: Dict[str, Any], version: str,
         "tokens_out": tokens_out,
         "cost_usd_reported": cost_usd,
         "extraction_status": signal["extraction_status"],
+        "attempts": attempts,
     }
+    if error:
+        lin["error"] = error
+    if raw_response:
+        lin["raw_response"] = raw_response[:2000]
+    if stop_reason is not None:
+        lin["stop_reason"] = stop_reason
+    if api_error_status is not None:
+        lin["api_error_status"] = api_error_status
+    if chunk_statuses is not None:
+        lin["chunk_statuses"] = chunk_statuses
+    if chunk_errors:
+        lin["chunk_errors"] = chunk_errors
+    return lin
 
 
 def append_records(signal: Dict[str, Any], lineage: Dict[str, Any], log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    with (log_dir / "signal.jsonl").open("a") as f:
-        f.write(json.dumps(signal) + "\n")
+    if signal.get("extraction_status") == "ok":
+        with (log_dir / "signal.jsonl").open("a") as f:
+            f.write(json.dumps(signal) + "\n")
     with (log_dir / "signal.meta.jsonl").open("a") as f:
         f.write(json.dumps(lineage) + "\n")
 
