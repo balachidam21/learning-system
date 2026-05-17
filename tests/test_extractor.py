@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from extractor import extract_session, ExtractorResult, _robust_json_parse
+from extractor import extract_session, ExtractorResult, _robust_json_parse, CallResult, _extract_one_chunk
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -234,3 +234,40 @@ def test_robust_parse_fenced_with_prose_both_sides():
 def test_robust_parse_multiple_objects_returns_none():
     # documents actual behavior: first-{ to last-} spans both → invalid → None
     assert _robust_json_parse('{"first": 1} {"second": 2}') is None
+
+
+def _outer(result, is_error=False, stop="end_turn", api_err=None, rc=0, stderr=""):
+    o = {"is_error": is_error, "result": result, "stop_reason": stop,
+         "api_error_status": api_err,
+         "usage": {"input_tokens": 10, "output_tokens": 5,
+                   "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+         "total_cost_usd": 0.01}
+    p = MagicMock(); p.returncode = rc; p.stdout = json.dumps(o); p.stderr = stderr
+    return p
+
+
+def test_callresult_ok_carries_stop_reason():
+    p = _outer('{"topics": ["x"]}')
+    with patch("extractor.subprocess.run", return_value=p):
+        cr = _extract_one_chunk("PROMPT", "content")
+    assert isinstance(cr, CallResult)
+    assert cr.signal["extraction_status"] == "ok"
+    assert cr.stop_reason == "end_turn"
+    assert cr.error is None
+
+
+def test_callresult_nonzero_exit_parses_stdout_error():
+    p = _outer("context length exceeded", is_error=True, api_err=400, rc=1, stderr="")
+    with patch("extractor.subprocess.run", return_value=p):
+        cr = _extract_one_chunk("PROMPT", "content")
+    assert cr.signal["extraction_status"] == "failed"
+    assert cr.api_error_status == 400
+    assert "context length exceeded" in cr.error
+
+
+def test_callresult_malformed_captures_raw():
+    p = _outer("I cannot do that")
+    with patch("extractor.subprocess.run", return_value=p):
+        cr = _extract_one_chunk("PROMPT", "content")
+    assert cr.signal["extraction_status"] == "malformed"
+    assert cr.raw_response == "I cannot do that"

@@ -73,6 +73,19 @@ def _robust_json_parse(text: str) -> Optional[Dict[str, Any]]:
 
 
 @dataclass
+class CallResult:
+    signal: Dict[str, Any]
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    stop_reason: Optional[str] = None
+    api_error_status: Optional[Any] = None
+    error: Optional[str] = None
+    raw_response: Optional[str] = None
+    attempts: int = 1
+
+
+@dataclass
 class ExtractorResult:
     signal: Dict[str, Any]
     lineage: Dict[str, Any]
@@ -140,12 +153,9 @@ def _merge_signals(signals: list[Dict[str, Any]], session_id: str) -> Dict[str, 
     return merged
 
 
-def _extract_one_chunk(prompt_text: str, content: str) -> Tuple[Dict[str, Any], int, int, float]:
-    """Run a single claude CLI invocation. Returns (signal_dict, tokens_in, tokens_out, cost_usd).
+def _extract_one_chunk(prompt_text: str, content: str) -> "CallResult":
+    """Run a single claude CLI invocation. Returns a CallResult.
     Signal dict has extraction_status set to 'ok', 'failed', or 'malformed'."""
-    tokens_in = 0
-    tokens_out = 0
-    cost_usd = 0.0
     try:
         proc = subprocess.run(
             [
@@ -161,36 +171,52 @@ def _extract_one_chunk(prompt_text: str, content: str) -> Tuple[Dict[str, Any], 
             timeout=CLI_TIMEOUT_SEC,
             check=False,
         )
-        if proc.returncode != 0:
-            return ({"extraction_status": "failed",
-                     "error": f"claude CLI exit {proc.returncode}: {proc.stderr[:500]}"},
-                    0, 0, 0.0)
-
-        outer = json.loads(proc.stdout)
-        if outer.get("is_error"):
-            return ({"extraction_status": "failed",
-                     "error": f"claude CLI reported error: {outer.get('result', outer.get('subtype', ''))[:200]}"},
-                    0, 0, 0.0)
-
-        result_text = outer.get("result", "")
-        usage = outer.get("usage", {})
-        tokens_in = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
-        tokens_out = usage.get("output_tokens", 0)
-        cost_usd = outer.get("total_cost_usd", 0.0)
     except Exception as e:
-        return ({"extraction_status": "failed", "error": str(e)[:500]},
-                0, 0, 0.0)
+        return CallResult(signal={"extraction_status": "failed"}, error=str(e)[:500])
+
+    outer = None
+    if proc.stdout:
+        try:
+            outer = json.loads(proc.stdout)
+        except (json.JSONDecodeError, ValueError):
+            outer = None
+    is_dict = isinstance(outer, dict)
+    stop_reason = outer.get("stop_reason") if is_dict else None
+    api_error_status = outer.get("api_error_status") if is_dict else None
+
+    if proc.returncode != 0:
+        detail = str(outer.get("result") or outer.get("subtype") or "") if is_dict else ""
+        return CallResult(signal={"extraction_status": "failed"},
+                          error=f"claude CLI exit {proc.returncode}: {(detail or proc.stderr)[:500]}",
+                          stop_reason=stop_reason, api_error_status=api_error_status)
+    if not is_dict:
+        return CallResult(signal={"extraction_status": "failed"},
+                          error=f"unparseable CLI stdout: {proc.stdout[:300]}",
+                          stop_reason=stop_reason, api_error_status=api_error_status)
+    if outer.get("is_error"):
+        detail = str(outer.get("result") or outer.get("subtype") or "")
+        return CallResult(signal={"extraction_status": "failed"},
+                          error=f"claude CLI reported error: {detail[:300]}",
+                          stop_reason=stop_reason, api_error_status=api_error_status)
+
+    result_text = outer.get("result", "") or ""
+    usage = outer.get("usage", {}) or {}
+    tokens_in = (usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+                 + usage.get("cache_creation_input_tokens", 0))
+    tokens_out = usage.get("output_tokens", 0)
+    cost_usd = outer.get("total_cost_usd", 0.0)
 
     parsed = _robust_json_parse(result_text)
     if parsed is None:
-        # raw_response (≤2000 chars) is the diagnostic trail, intentionally replacing
-        # the old JSONDecodeError string — keeps context without unbounded growth.
-        return ({"extraction_status": "malformed",
-                 "error": "non-JSON response",
-                 "raw_response": result_text[:2000]},
-                tokens_in, tokens_out, cost_usd)
+        # raw_response (≤2000 chars) is the diagnostic trail for malformed output
+        return CallResult(signal={"extraction_status": "malformed"},
+                          tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd,
+                          stop_reason=stop_reason, api_error_status=api_error_status,
+                          error="non-JSON response", raw_response=result_text[:2000])
     parsed.setdefault("extraction_status", "ok")
-    return (parsed, tokens_in, tokens_out, cost_usd)
+    return CallResult(signal=parsed, tokens_in=tokens_in, tokens_out=tokens_out,
+                      cost_usd=cost_usd, stop_reason=stop_reason,
+                      api_error_status=api_error_status)
 
 
 def extract_session(transcript_path: Path) -> ExtractorResult:
@@ -213,11 +239,16 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
     transcript_text = transcript_path.read_text()
 
     if size_bytes <= SINGLE_SHOT_MAX_BYTES:
-        # Single-shot path (existing behavior)
-        signal, tokens_in, tokens_out, cost_usd = _extract_one_chunk(prompt_text, transcript_text)
+        # Single-shot path
+        cr = _extract_one_chunk(prompt_text, transcript_text)
+        signal = cr.signal
+        if cr.error and "error" not in signal:
+            signal["error"] = cr.error
+        if cr.raw_response and "raw_response" not in signal:
+            signal["raw_response"] = cr.raw_response
         signal.setdefault("session_id", transcript_path.stem)
         lineage = _lineage(transcript_path, signal, version, prompt_text,
-                           tokens_in, tokens_out, cost_usd)
+                           cr.tokens_in, cr.tokens_out, cr.cost_usd)
         return ExtractorResult(signal=signal, lineage=lineage)
 
     # Chunked path
@@ -231,21 +262,21 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
         lineage = _lineage(transcript_path, signal, version, prompt_text, 0, 0, 0.0)
         return ExtractorResult(signal=signal, lineage=lineage)
 
-    chunk_signals = []
-    total_tokens_in = 0
-    total_tokens_out = 0
+    chunk_results = []
+    total_tokens_in = total_tokens_out = 0
     total_cost = 0.0
     any_failed = False
     for i, chunk in enumerate(chunks):
         # Hint to the model which chunk this is (helps it not over-claim duration etc.)
         prefixed = f"[Chunk {i+1} of {len(chunks)} from session]\n{chunk}"
-        chunk_sig, ti, to, c = _extract_one_chunk(prompt_text, prefixed)
-        total_tokens_in += ti
-        total_tokens_out += to
-        total_cost += c
-        if chunk_sig.get("extraction_status") in ("failed", "malformed"):
+        cr = _extract_one_chunk(prompt_text, prefixed)
+        total_tokens_in += cr.tokens_in
+        total_tokens_out += cr.tokens_out
+        total_cost += cr.cost_usd
+        if cr.signal.get("extraction_status") in ("failed", "malformed"):
             any_failed = True
-        chunk_signals.append(chunk_sig)
+        chunk_results.append(cr)
+    chunk_signals = [cr.signal for cr in chunk_results]
 
     # Filter out failed chunks before merging — keep only the ones that produced real data
     ok_signals = [s for s in chunk_signals if s.get("extraction_status") == "ok"]
