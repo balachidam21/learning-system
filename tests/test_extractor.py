@@ -206,3 +206,23 @@ def test_extract_skips_beyond_max_chunks(tmp_path):
         result = extract_session(huge)
         mock_run.assert_not_called()  # never even attempts
     assert result.signal["extraction_status"] == "skipped_too_large"
+
+
+from extractor import _robust_json_parse
+
+def test_robust_parse_bare():
+    assert _robust_json_parse('{"a": 1}') == {"a": 1}
+
+def test_robust_parse_fenced():
+    assert _robust_json_parse('```json\n{"a": 1}\n```') == {"a": 1}
+
+def test_robust_parse_prose_wrapped():
+    txt = 'Here is the extraction:\n{"a": 1, "b": [2]}\nDone.'
+    assert _robust_json_parse(txt) == {"a": 1, "b": [2]}
+
+def test_robust_parse_garbage_returns_none():
+    assert _robust_json_parse("I cannot do that.") is None
+    assert _robust_json_parse("") is None
+
+def test_robust_parse_rejects_non_dict():
+    assert _robust_json_parse('[1, 2, 3]') is None

@@ -8,7 +8,7 @@ import subprocess
 import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 from lib.slug import transcripts_for_project
 from lib.state import load_state, save_state, needs_extraction
@@ -42,6 +42,28 @@ def _prompt_hash(prompt_text: str) -> str:
 def _strip_code_fence(s: str) -> str:
     m = _FENCE_RE.match(s)
     return m.group(1) if m else s
+
+
+def _robust_json_parse(text: str) -> Optional[Dict[str, Any]]:
+    """Layered: bare → fenced-anywhere → outermost {...}. Returns dict or None."""
+    if not text or not text.strip():
+        return None
+    s = text.strip()
+    candidates = [s]
+    fence = re.search(r"```(?:json)?\s*(.*?)```", s, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1).strip())
+    i, j = s.find("{"), s.rfind("}")
+    if i != -1 and j != -1 and j > i:
+        candidates.append(s[i:j + 1])
+    for c in candidates:
+        try:
+            obj = json.loads(c)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
 
 
 @dataclass
@@ -153,15 +175,14 @@ def _extract_one_chunk(prompt_text: str, content: str) -> Tuple[Dict[str, Any], 
         return ({"extraction_status": "failed", "error": str(e)[:500]},
                 0, 0, 0.0)
 
-    try:
-        signal = json.loads(_strip_code_fence(result_text))
-        signal.setdefault("extraction_status", "ok")
-        return (signal, tokens_in, tokens_out, cost_usd)
-    except json.JSONDecodeError as e:
+    parsed = _robust_json_parse(result_text)
+    if parsed is None:
         return ({"extraction_status": "malformed",
-                 "error": f"non-JSON response: {e}",
+                 "error": "non-JSON response",
                  "raw_response": result_text[:2000]},
                 tokens_in, tokens_out, cost_usd)
+    parsed.setdefault("extraction_status", "ok")
+    return (parsed, tokens_in, tokens_out, cost_usd)
 
 
 def extract_session(transcript_path: Path) -> ExtractorResult:
