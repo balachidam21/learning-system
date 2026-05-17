@@ -97,7 +97,8 @@ def test_scan_all_retries_failed_extractions(tmp_path):
     bad.returncode = 1
     bad.stdout = ""
     bad.stderr = "first call fails"
-    with patch("extractor.subprocess.run", return_value=bad):
+    with patch("extractor.subprocess.run", return_value=bad), \
+         patch("extractor.time.sleep"):
         n1 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
 
     assert n1 == 1  # we did attempt the extraction
@@ -107,7 +108,8 @@ def test_scan_all_retries_failed_extractions(tmp_path):
 
     # Second run: CLI succeeds — should retry the failed transcript
     fake_signal = {"session_id": "sess1", "topics": ["x"], "extraction_status": "ok"}
-    with patch("extractor.subprocess.run", return_value=_mock_cli(fake_signal)):
+    with patch("extractor.subprocess.run", return_value=_mock_cli(fake_signal)), \
+         patch("extractor.time.sleep"):
         n2 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
 
     assert n2 == 1  # retried, not skipped

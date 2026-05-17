@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from extractor import extract_session, ExtractorResult, _robust_json_parse, CallResult, _extract_one_chunk
+from extractor import _classify_retryable, _extract_with_retry
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -378,9 +379,6 @@ def test_lineage_raw_response_truncated(tmp_path):
     assert len(res.lineage["raw_response"]) == 2000
 
 
-from extractor import _classify_retryable, _extract_with_retry
-
-
 def test_retryable_classification():
     fail = CallResult(signal={"extraction_status": "failed"})
     assert _classify_retryable(fail) is True
@@ -403,6 +401,7 @@ def test_retry_recovers_transient(monkeypatch):
     cr = _extract_with_retry("P", "c", max_retries=2)
     assert cr.signal["extraction_status"] == "ok"
     assert cr.attempts == 2
+    assert calls["n"] == 2
 
 
 def test_retry_exhausts_then_fails(monkeypatch):
@@ -428,3 +427,27 @@ def test_retry_skips_overflow(monkeypatch):
     cr = _extract_with_retry("P", "c", max_retries=2)
     assert cr.signal["extraction_status"] == "failed"
     assert n["c"] == 1               # overflow is non-retryable → one attempt only
+    assert cr.attempts == 1
+
+
+def test_chunked_retry_recovers_chunk(tmp_path, monkeypatch):
+    # chunk 1 fails transiently then recovers on retry; chunk 2 ok first try.
+    tx = tmp_path / "sess-retry.jsonl"
+    tx.write_text('{"role":"user","content":"line one here"}\n'
+                  '{"role":"assistant","content":"line two here"}\n')
+    monkeypatch.setattr("extractor.SINGLE_SHOT_MAX_BYTES", 1)
+    monkeypatch.setattr("extractor.CHUNK_BYTES", 1)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
+    seq = [_outer("transient", is_error=True, rc=1),   # chunk 1, attempt 1: fail (retryable)
+           _outer('{"topics": ["a"]}'),                # chunk 1, attempt 2: ok
+           _outer('{"topics": ["b"]}')]                # chunk 2, attempt 1: ok
+    calls = {"n": 0}
+    def fake_run(*a, **k):
+        r = seq[calls["n"]]; calls["n"] += 1; return r
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    res = extract_session(tx)
+    assert calls["n"] == 3
+    assert res.lineage["chunk_statuses"] == ["ok", "ok"]
+    assert res.lineage["attempts"] == 2          # max across chunks (chunk 1 took 2)
+    assert res.signal["extraction_status"] == "ok"
+    assert res.signal.get("partial") is not True  # chunk 1 recovered → not partial

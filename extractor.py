@@ -222,7 +222,9 @@ def _extract_one_chunk(prompt_text: str, content: str) -> "CallResult":
                       api_error_status=api_error_status)
 
 
-# Deterministic context-overflow signatures — retrying these only wastes spend
+# Overflow signatures surfaced without a status code — fallback for no-status-code paths only.
+# Intentionally does not catch every Anthropic overflow code variant (e.g. prompt_too_long);
+# those merely cost one wasted retry, acceptable for a personal tool.
 _OVERFLOW_RE = re.compile(r"too long|context (length|window)|exceeds? .*token", re.I)
 
 
@@ -230,8 +232,10 @@ def _classify_retryable(cr: "CallResult") -> bool:
     """True if the failure looks transient and worth retrying within this run."""
     if cr.signal.get("extraction_status") not in ("failed", "malformed"):
         return False
-    if cr.api_error_status == 400 and cr.error and _OVERFLOW_RE.search(cr.error):
-        return False
+    if cr.api_error_status == 400:
+        return False  # deterministic client error (incl. context overflow) — retry won't help
+    if cr.error and _OVERFLOW_RE.search(cr.error):
+        return False  # overflow surfaced without a status code
     return True
 
 
@@ -297,7 +301,7 @@ def extract_session(transcript_path: Path) -> ExtractorResult:
     total_tokens_in = total_tokens_out = 0
     total_cost = 0.0
     any_failed = False
-    for i, chunk in enumerate(chunks):
+    for i, chunk in enumerate(chunks):  # worst-case CLI calls: MAX_CHUNKS × (1 + max_retries)
         # Hint to the model which chunk this is (helps it not over-claim duration etc.)
         prefixed = f"[Chunk {i+1} of {len(chunks)} from session]\n{chunk}"
         cr = _extract_with_retry(prompt_text, prefixed)
