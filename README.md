@@ -74,6 +74,11 @@ weekend of each month to walk through findings.
 - Data: `<project>/log/signal.jsonl`, `signal.meta.jsonl`, `bird-eye/`, `system-drift/`
 - Transcripts (read-only): `~/.claude/projects/<slug>/`
 
+## Changelog
+
+- `0.2.0` — extraction reliability: failure observability in meta (error/raw_response/stop_reason/api_error_status/attempts), bounded per-call retry, robust JSON parse, non-ok kept out of signal.jsonl; drift_monitor failure-rate now meta-sourced.
+- `0.1.0` — initial release
+
 ## See also
 
 - Design spec: `~/Documents/code/ai-inference-track/plan/specs/2026-05-12-self-learning-system-stage-1.html`

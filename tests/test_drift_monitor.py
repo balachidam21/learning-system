@@ -21,13 +21,21 @@ def test_coverage_gap_detected(tmp_path):
 
 
 def test_failure_rate_reported(tmp_path):
+    # Under D2, failure rate comes from signal.meta.jsonl, not signal.jsonl.
+    # signal.jsonl has only the ok record; failed record lives only in meta.
     project_dir = tmp_path
     (project_dir / "log").mkdir()
     (project_dir / "log" / "DAILY_LOG.md").write_text("")
+    # signal.jsonl: ok record only (production reality post-Task-3)
     (project_dir / "log" / "signal.jsonl").write_text(
-        json.dumps({"session_id": "a", "started_at": "2026-05-01T19:00:00Z",
-                    "extraction_status": "failed"}) + "\n"
-        + json.dumps({"session_id": "b", "started_at": "2026-05-02T19:00:00Z",
+        json.dumps({"session_id": "b", "started_at": "2026-05-02T19:00:00Z",
+                    "extraction_status": "ok"}) + "\n"
+    )
+    # signal.meta.jsonl: the complete ledger (1 failed + 1 ok)
+    (project_dir / "log" / "signal.meta.jsonl").write_text(
+        json.dumps({"session_id": "a", "extracted_at": "2026-05-01T19:00:00Z",
+                    "extraction_status": "failed", "error": "timeout"}) + "\n"
+        + json.dumps({"session_id": "b", "extracted_at": "2026-05-02T19:00:00Z",
                       "extraction_status": "ok"}) + "\n"
     )
     out = build_drift_report(project_dir, month="2026-05")
@@ -51,18 +59,16 @@ def test_invalid_date_header_does_not_crash(tmp_path):
 
 
 def test_failed_records_without_started_at_are_counted(tmp_path):
-    """Failed extractions don't have started_at; failure rate must still include them."""
+    """Failed extractions don't have started_at; failure rate must still include them.
+    Under D2, failure rate is meta-sourced. signal.jsonl has only the ok record."""
     project_dir = tmp_path
     (project_dir / "log").mkdir()
     (project_dir / "log" / "DAILY_LOG.md").write_text("")
-    # Production-shape failed record (no started_at)
-    failed_rec = {"session_id": "abc", "extraction_status": "failed", "error": "timeout"}
+    # signal.jsonl: ok record only (failed never lands here post-Task-3)
     ok_rec = {"session_id": "def", "started_at": "2026-05-15T19:00:00Z",
               "extraction_status": "ok"}
-    (project_dir / "log" / "signal.jsonl").write_text(
-        json.dumps(failed_rec) + "\n" + json.dumps(ok_rec) + "\n"
-    )
-    # Lineage for both — gives the failed one a timestamp
+    (project_dir / "log" / "signal.jsonl").write_text(json.dumps(ok_rec) + "\n")
+    # meta ledger: both records, failed has extracted_at for month-filtering
     failed_meta = {"session_id": "abc", "extracted_at": "2026-05-10T10:00:00Z",
                    "extraction_status": "failed"}
     ok_meta = {"session_id": "def", "extracted_at": "2026-05-15T19:30:00Z",
@@ -73,6 +79,32 @@ def test_failed_records_without_started_at_are_counted(tmp_path):
 
     out = build_drift_report(project_dir, month="2026-05")
     text = out.read_text()
-    # Failed record should be counted: 1/2 = 50%
+    # Meta-sourced failure count: 1 failed / 2 attempts = 50%
+    assert "1/2" in text
+    assert "50.0%" in text
+
+
+def test_drift_failure_rate_from_meta(tmp_path):
+    """Guard: failure rate is sourced from meta, not signal.jsonl.
+    signal.jsonl has only 1 ok record but meta has 1 ok + 1 failed.
+    Report must show 1/2 = 50%, proving it reads meta."""
+    project_dir = tmp_path
+    (project_dir / "log").mkdir()
+    (project_dir / "log" / "DAILY_LOG.md").write_text("")
+    # signal.jsonl: only the ok record (no failures — as in production)
+    (project_dir / "log" / "signal.jsonl").write_text(
+        json.dumps({"session_id": "s1", "started_at": "2026-05-10T19:00:00Z",
+                    "extraction_status": "ok"}) + "\n"
+    )
+    # meta: 1 ok + 1 failed
+    (project_dir / "log" / "signal.meta.jsonl").write_text(
+        json.dumps({"session_id": "s1", "extracted_at": "2026-05-10T19:05:00Z",
+                    "extraction_status": "ok"}) + "\n"
+        + json.dumps({"session_id": "s2", "extracted_at": "2026-05-11T09:00:00Z",
+                      "extraction_status": "failed", "error": "boom"}) + "\n"
+    )
+    out = build_drift_report(project_dir, month="2026-05")
+    text = out.read_text()
+    # If failure rate were sourced from signal.jsonl it would be 0/1=0%, not 1/2=50%
     assert "1/2" in text
     assert "50.0%" in text

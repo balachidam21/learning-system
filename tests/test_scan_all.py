@@ -68,12 +68,50 @@ def test_scan_all_skips_unchanged_sessions(tmp_path):
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
-        "schema_version": 1, "extractor_version": "0.1.0",
+        "schema_version": 1, "extractor_version": "0.2.0",
         "sessions": {"sess1": {"last_mtime": mtime}}
     }))
 
     n = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
     assert n == 0
+
+
+def test_scan_all_failed_not_in_signal(tmp_path):
+    """Guard (D1): a failed extraction must NOT write to signal.jsonl.
+    The meta ledger must record exactly 1 attempt with extraction_status='failed'
+    and an 'error' key."""
+    claude_root = tmp_path / "claude"
+    project_dir = tmp_path / "myproj"
+    log_dir = project_dir / "log"
+    log_dir.mkdir(parents=True)
+    slug = str(project_dir).replace("/", "-")
+    (claude_root / "projects" / slug).mkdir(parents=True)
+    transcript = claude_root / "projects" / slug / "sess1.jsonl"
+    transcript.write_text('{"type":"meta","session_id":"sess1"}\n')
+
+    projects_txt = tmp_path / "projects.txt"
+    projects_txt.write_text(str(project_dir) + "\n")
+    state_path = tmp_path / "state.json"
+
+    bad = MagicMock()
+    bad.returncode = 1
+    bad.stdout = ""
+    bad.stderr = "boom"
+    with patch("extractor.subprocess.run", return_value=bad), \
+         patch("extractor.time.sleep"):
+        scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
+
+    # signal.jsonl must be absent or empty — no failed records allowed
+    signal_path = log_dir / "signal.jsonl"
+    assert not signal_path.exists() or signal_path.read_text().strip() == ""
+
+    # meta ledger must have exactly 1 record, status=failed, with an error key
+    meta_path = log_dir / "signal.meta.jsonl"
+    assert meta_path.exists()
+    meta_records = [json.loads(line) for line in meta_path.read_text().splitlines() if line.strip()]
+    assert len(meta_records) == 1
+    assert meta_records[0]["extraction_status"] == "failed"
+    assert "error" in meta_records[0]
 
 
 def test_scan_all_retries_failed_extractions(tmp_path):

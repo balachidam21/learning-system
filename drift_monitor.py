@@ -77,6 +77,34 @@ def _load_signal_records(signal_path: Path, year: int, month: int,
     return out
 
 
+def _load_meta_records(meta_path: Path, year: int, month: int) -> List[Dict[str, Any]]:
+    """Return meta ledger records whose extracted_at falls in the given year/month.
+
+    Records with missing or unparseable extracted_at are silently skipped.
+    Returns [] if the file is absent.
+    """
+    if not meta_path.exists():
+        return []
+    out = []
+    for line in meta_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ts_str = rec.get("extracted_at", "")
+        if not ts_str:
+            continue
+        try:
+            t = datetime.datetime.fromisoformat(ts_str.replace("Z", ""))
+        except ValueError:
+            continue
+        if t.year == year and t.month == month:
+            out.append(rec)
+    return out
+
+
 def build_drift_report(project_dir: Path, month: str) -> Path:
     """Build a monthly drift report. month is 'YYYY-MM'.
 
@@ -87,11 +115,14 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
     log_path = project_dir / "log" / "DAILY_LOG.md"
     log_text = log_path.read_text() if log_path.exists() else ""
     manual_dates = _parse_daily_log_dates(log_text, year, m)
+    # ok signals only — used for coverage (auto_dates) and extracted-record count
     signals = _load_signal_records(
         project_dir / "log" / "signal.jsonl",
         year, m,
         meta_path=project_dir / "log" / "signal.meta.jsonl",
     )
+    # complete operational ledger — used for failure rate (D2)
+    attempts = _load_meta_records(project_dir / "log" / "signal.meta.jsonl", year, m)
 
     auto_dates = set()
     for s in signals:
@@ -103,8 +134,8 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
 
     missing_auto = sorted(d for d in manual_dates if d not in auto_dates)
     extra_auto = sorted(d for d in auto_dates if d not in set(manual_dates))
-    failures = [s for s in signals if s.get("extraction_status") != "ok"]
-    failure_rate = (len(failures) / len(signals) * 100) if signals else 0
+    failures = [a for a in attempts if a.get("extraction_status") != "ok"]
+    failure_rate = (len(failures) / len(attempts) * 100) if attempts else 0
 
     out_dir = project_dir / "log" / "system-drift"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,7 +154,7 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
         (", ".join(d.isoformat() for d in extra_auto) if extra_auto else "(none)"),
         f"",
         f"## Failure rate",
-        f"- {len(failures)}/{len(signals)} extractions failed/malformed ({failure_rate:.1f}%)",
+        f"- {len(failures)}/{len(attempts)} extractions failed/malformed ({failure_rate:.1f}%)",
         f"",
         f"## Recommendations",
     ]

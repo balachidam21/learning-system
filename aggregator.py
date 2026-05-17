@@ -142,10 +142,9 @@ def _section_patterns(week_signals: List[Dict[str, Any]]) -> str:
 
 
 def _lineage_footer(week_signals: List[Dict[str, Any]]) -> str:
-    failed = sum(1 for s in week_signals if s.get("extraction_status") != "ok")
     return (f"\n---\n"
             f"*Generated {datetime.date.today().isoformat()} by aggregator v{AGGREGATOR_VERSION}. "
-            f"{len(week_signals) - failed}/{len(week_signals)} sessions extracted ok this week.*\n")
+            f"{len(week_signals)} sessions with extracted signal this week.*\n")
 
 
 def build_report(project_dir: Path, week: str = None) -> Tuple[Path, Path]:
