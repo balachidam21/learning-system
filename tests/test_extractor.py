@@ -430,6 +430,21 @@ def test_retry_skips_overflow(monkeypatch):
     assert cr.attempts == 1
 
 
+def test_retry_does_not_misclassify_overflow_in_model_text(monkeypatch):
+    # CLI fails transiently; model `result` text happens to mention "too long".
+    # api_error_status is None → must be RETRYABLE (regex must not fire on model text).
+    seq = [_outer("the user said the context is too long here", is_error=True, rc=1),
+           _outer('{"topics": ["recovered"]}')]
+    calls = {"n": 0}
+    def fake_run(*a, **k):
+        r = seq[calls["n"]]; calls["n"] += 1; return r
+    monkeypatch.setattr("extractor.subprocess.run", fake_run)
+    monkeypatch.setattr("extractor.time.sleep", lambda *_: None)
+    cr = _extract_with_retry("P", "c", max_retries=2)
+    assert cr.signal["extraction_status"] == "ok"
+    assert cr.attempts == 2 and calls["n"] == 2
+
+
 def test_chunked_retry_recovers_chunk(tmp_path, monkeypatch):
     # chunk 1 fails transiently then recovers on retry; chunk 2 ok first try.
     tx = tmp_path / "sess-retry.jsonl"

@@ -29,9 +29,7 @@ CLI_TIMEOUT_SEC = 600
 STATE_PATH = ROOT / "state.json"
 PROJECTS_FILE = ROOT / "projects.txt"
 
-# Strip ```json ... ``` fences the model often wraps around JSON output
-_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
-# Same fence body as _FENCE_RE but unanchored — finds a fenced block amid prose
+# Finds a fenced block amid prose — used by _robust_json_parse
 _FENCE_SEARCH_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -41,11 +39,6 @@ def _version() -> str:
 
 def _prompt_hash(prompt_text: str) -> str:
     return "sha256:" + hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()[:16]
-
-
-def _strip_code_fence(s: str) -> str:
-    m = _FENCE_RE.match(s)
-    return m.group(1) if m else s
 
 
 def _robust_json_parse(text: str) -> Optional[Dict[str, Any]]:
@@ -222,20 +215,19 @@ def _extract_one_chunk(prompt_text: str, content: str) -> "CallResult":
                       api_error_status=api_error_status)
 
 
-# Overflow signatures surfaced without a status code — fallback for no-status-code paths only.
-# Intentionally does not catch every Anthropic overflow code variant (e.g. prompt_too_long);
-# those merely cost one wasted retry, acceptable for a personal tool.
-_OVERFLOW_RE = re.compile(r"too long|context (length|window)|exceeds? .*token", re.I)
-
-
 def _classify_retryable(cr: "CallResult") -> bool:
-    """True if the failure looks transient and worth retrying within this run."""
+    """True if the failure looks transient and worth retrying within this run.
+
+    Only api_error_status 400 (deterministic client error, incl. context
+    overflow) is treated as non-retryable. We deliberately do NOT pattern-match
+    the error string: it is often built from model-authored `result` text,
+    which can mention "context too long" while describing a transcript — that
+    would false-classify a transient failure as non-retryable.
+    """
     if cr.signal.get("extraction_status") not in ("failed", "malformed"):
         return False
     if cr.api_error_status == 400:
-        return False  # deterministic client error (incl. context overflow) — retry won't help
-    if cr.error and _OVERFLOW_RE.search(cr.error):
-        return False  # overflow surfaced without a status code
+        return False
     return True
 
 
@@ -416,7 +408,10 @@ def scan_all(claude_root: Path = Path.home() / ".claude",
             result = extract_session(transcript)
             append_records(result.signal, result.lineage, log_dir)
             extracted += 1
-            # Only checkpoint successful extractions; failed/malformed will retry next run
+            # Only checkpoint successful extractions; failed/malformed will retry next run.
+            # Partial chunked successes (extraction_status=="ok", partial=True) are also
+            # checkpointed here and treated as terminal until the next extractor_version bump —
+            # failed chunks are not retried on later runs by design (retry is within-run only).
             if result.lineage["extraction_status"] == "ok":
                 mtime = datetime.datetime.fromtimestamp(
                     transcript.stat().st_mtime, tz=datetime.timezone.utc
