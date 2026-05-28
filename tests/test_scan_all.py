@@ -193,6 +193,8 @@ def test_scan_all_reopens_skip_on_mtime_change(tmp_path, monkeypatch):
     projects_txt = tmp_path / "projects.txt"; projects_txt.write_text(str(project_dir))
     state_path = tmp_path / "state.json"
     assert scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path) == 1
+    # same mtime -> checkpointed skip is NOT re-attempted (this is the half that fails pre-fix)
+    assert scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path) == 0
     # change the file -> new mtime -> must re-evaluate
     tx.write_text('{"x":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n')
     future = time.time() + 5; os.utime(tx, (future, future))
