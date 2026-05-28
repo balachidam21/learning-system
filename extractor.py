@@ -408,11 +408,13 @@ def scan_all(claude_root: Path = Path.home() / ".claude",
             result = extract_session(transcript)
             append_records(result.signal, result.lineage, log_dir)
             extracted += 1
-            # Only checkpoint successful extractions; failed/malformed will retry next run.
-            # Partial chunked successes (extraction_status=="ok", partial=True) are also
-            # checkpointed here and treated as terminal until the next extractor_version bump —
-            # failed chunks are not retried on later runs by design (retry is within-run only).
-            if result.lineage["extraction_status"] == "ok":
+            # Checkpoint outcomes that are DETERMINISTIC for an unchanged file:
+            #   - ok (incl. partial chunked successes; terminal until extractor_version bump)
+            #   - skipped_too_large (size-based; re-stat'ing nightly is pointless)
+            # failed/malformed stay UN-checkpointed so they keep retrying (within-run retry
+            # plus a fresh attempt next run). The mtime guard in needs_extraction re-opens a
+            # checkpointed file only if it actually changes.
+            if result.lineage["extraction_status"] in ("ok", "skipped_too_large"):
                 mtime = datetime.datetime.fromtimestamp(
                     transcript.stat().st_mtime, tz=datetime.timezone.utc
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -155,3 +155,45 @@ def test_scan_all_retries_failed_extractions(tmp_path):
     state = json.loads(state_path.read_text())
     assert "sess1" in state["sessions"]
     assert state["sessions"]["sess1"]["extraction_status"] == "ok"
+
+
+def test_scan_all_checkpoints_skipped_too_large(tmp_path, monkeypatch):
+    # tiny cap so a small transcript hits the size-skip path (no CLI call needed)
+    monkeypatch.setattr("extractor.MAX_TRANSCRIPT_BYTES", 10)
+    from extractor import scan_all
+    claude_root = tmp_path / "claude"; project_dir = tmp_path / "myproj"
+    (project_dir / "log").mkdir(parents=True)
+    slug = str(project_dir).replace("/", "-")
+    (claude_root / "projects" / slug).mkdir(parents=True)
+    tx = claude_root / "projects" / slug / "big.jsonl"
+    tx.write_text('{"type":"meta"}\n{"role":"user","content":"hello there enough bytes"}\n')
+    projects_txt = tmp_path / "projects.txt"; projects_txt.write_text(str(project_dir))
+    state_path = tmp_path / "state.json"
+    n1 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
+    assert n1 == 1
+    state = json.loads(state_path.read_text())
+    assert state["sessions"]["big"]["extraction_status"] == "skipped_too_large"
+    # second run: unchanged mtime -> needs_extraction False -> not re-attempted, no 2nd meta record
+    n2 = scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path)
+    assert n2 == 0
+    meta = [l for l in (project_dir / "log" / "signal.meta.jsonl").read_text().splitlines() if l.strip()]
+    assert len(meta) == 1
+
+
+def test_scan_all_reopens_skip_on_mtime_change(tmp_path, monkeypatch):
+    monkeypatch.setattr("extractor.MAX_TRANSCRIPT_BYTES", 10)
+    from extractor import scan_all
+    import os, time
+    claude_root = tmp_path / "claude"; project_dir = tmp_path / "myproj"
+    (project_dir / "log").mkdir(parents=True)
+    slug = str(project_dir).replace("/", "-")
+    (claude_root / "projects" / slug).mkdir(parents=True)
+    tx = claude_root / "projects" / slug / "big.jsonl"
+    tx.write_text('{"x":"aaaaaaaaaaaaaaaaaaaa"}\n')
+    projects_txt = tmp_path / "projects.txt"; projects_txt.write_text(str(project_dir))
+    state_path = tmp_path / "state.json"
+    assert scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path) == 1
+    # change the file -> new mtime -> must re-evaluate
+    tx.write_text('{"x":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n')
+    future = time.time() + 5; os.utime(tx, (future, future))
+    assert scan_all(claude_root=claude_root, projects_file=projects_txt, state_path=state_path) == 1

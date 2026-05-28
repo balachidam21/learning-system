@@ -135,6 +135,8 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
     missing_auto = sorted(d for d in manual_dates if d not in auto_dates)
     extra_auto = sorted(d for d in auto_dates if d not in set(manual_dates))
     skipped = [a for a in attempts if a.get("extraction_status") == "skipped_too_large"]
+    skipped_sessions = {a.get("session_id") for a in skipped}
+    n_skipped = len(skipped_sessions)
     considered = [a for a in attempts if a.get("extraction_status") != "skipped_too_large"]
     failures = [a for a in considered if a.get("extraction_status") != "ok"]
     failure_rate = (len(failures) / len(considered) * 100) if considered else 0
@@ -146,7 +148,7 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
     if not attempts:
         failure_line = "- No meta ledger found for this month — failure rate unavailable."
     elif not considered:
-        failure_line = f"- 0/0 extractions failed/malformed — all {len(skipped)} attempt(s) were skipped (too large)."
+        failure_line = f"- 0/0 extractions failed/malformed — all {n_skipped} transcript(s) were skipped (too large)."
     else:
         failure_line = f"- {len(failures)}/{len(considered)} extractions failed/malformed ({failure_rate:.1f}%)"
 
@@ -158,7 +160,7 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
         (", ".join(d.isoformat() for d in extra_auto) if extra_auto else "(none)"),
     ]
     if skipped:
-        coverage_lines.append(f"- {len(skipped)} transcript(s) skipped this month (too large to extract)")
+        coverage_lines.append(f"- {n_skipped} transcript(s) skipped this month (too large to extract)")
 
     body = [
         f"# System Drift Report — {month}",

@@ -110,3 +110,17 @@ def test_skipped_too_large_excluded_from_failure_rate(tmp_path):
     # the misleading 'review error.log' recommendation must NOT fire at 50%>10%? It SHOULD
     # fire (genuine 50% failure) — but verify it's driven by the 50%, not by the skip:
     assert "Failure rate above" in text
+
+
+def test_drift_skip_count_dedupes_by_session(tmp_path):
+    project_dir = tmp_path; (project_dir / "log").mkdir()
+    (project_dir / "log" / "DAILY_LOG.md").write_text("")
+    (project_dir / "log" / "signal.jsonl").write_text("")
+    # same skipped session recorded 16 times (nightly re-skip), different extracted_at
+    lines = [json.dumps({"session_id": "big1", "extracted_at": f"2026-05-{d:02d}T02:00:00Z",
+                         "extraction_status": "skipped_too_large"}) for d in range(10, 26)]
+    (project_dir / "log" / "signal.meta.jsonl").write_text("\n".join(lines) + "\n")
+    out = build_drift_report(project_dir, month="2026-05")
+    text = out.read_text()
+    assert "1 transcript(s) skipped" in text   # distinct session, not 16
+    assert "16 transcript" not in text
