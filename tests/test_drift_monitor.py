@@ -7,7 +7,8 @@ def test_coverage_gap_detected(tmp_path):
     project_dir = tmp_path
     (project_dir / "log").mkdir()
     # 2 manual entries but only 1 auto record
-    (project_dir / "log" / "DAILY_LOG.md").write_text(
+    (project_dir / "log" / "daily").mkdir()
+    (project_dir / "log" / "daily" / "2026-05.md").write_text(
         "## Log Entries\n\n### May 10, 2026\n\n### May 12, 2026\n"
     )
     signal = {"session_id": "s1", "started_at": "2026-05-10T19:00:00Z",
@@ -26,7 +27,8 @@ def test_invalid_date_header_does_not_crash(tmp_path):
     project_dir = tmp_path
     (project_dir / "log").mkdir()
     # "May 32, 2026" is invalid — should not crash, just get skipped
-    (project_dir / "log" / "DAILY_LOG.md").write_text(
+    (project_dir / "log" / "daily").mkdir()
+    (project_dir / "log" / "daily" / "2026-05.md").write_text(
         "## Log Entries\n\n### May 10, 2026\n\n### May 32, 2026\n"
     )
     (project_dir / "log" / "signal.jsonl").write_text("")

@@ -1,4 +1,4 @@
-"""Monthly system-self-check. Compares auto signal vs manual DAILY_LOG."""
+"""Monthly system-self-check. Compares auto signal vs the month's prose in log/daily/."""
 import json
 import re
 import datetime
@@ -112,7 +112,7 @@ def build_drift_report(project_dir: Path, month: str) -> Path:
     Output: <project_dir>/log/system-drift/YYYY-Mxx.md
     """
     year, m = map(int, month.split("-"))
-    log_path = project_dir / "log" / "DAILY_LOG.md"
+    log_path = project_dir / "log" / "daily" / f"{month}.md"
     log_text = log_path.read_text() if log_path.exists() else ""
     manual_dates = _parse_daily_log_dates(log_text, year, m)
     # ok signals only — used for coverage (auto_dates) and extracted-record count
