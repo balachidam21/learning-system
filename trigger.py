@@ -17,7 +17,7 @@ PROJECTS_TXT = ROOT / "projects.txt"
 
 
 def _normalize(p: str) -> str:
-    return os.path.normpath(os.path.expanduser(p.strip())).rstrip("/")
+    return os.path.normpath(os.path.expanduser(p.strip()))
 
 
 def should_trigger(project_dir: str, projects_txt: Path = PROJECTS_TXT) -> bool:
@@ -25,7 +25,7 @@ def should_trigger(project_dir: str, projects_txt: Path = PROJECTS_TXT) -> bool:
     if not project_dir or not projects_txt.exists():
         return False
     target = _normalize(project_dir)
-    for line in projects_txt.read_text().splitlines():
+    for line in projects_txt.read_text(errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -35,19 +35,22 @@ def should_trigger(project_dir: str, projects_txt: Path = PROJECTS_TXT) -> bool:
 
 
 def main() -> int:
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    if not should_trigger(project_dir):
+    try:
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+        if not should_trigger(project_dir):
+            return 0
+        label = f"com.{getpass.getuser()}.learning-system.extractor"
+        # `launchctl start` tells launchd to run the (loaded) agent detached and
+        # returns immediately. Errors (e.g. agent not loaded yet) are swallowed.
+        subprocess.run(
+            ["launchctl", "start", label],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        # A SessionStart hook must NEVER fail the session — swallow everything.
         return 0
-    label = f"com.{getpass.getuser()}.learning-system.extractor"
-    # `launchctl start` tells launchd to run the (loaded) agent detached and returns
-    # immediately. Errors (e.g. agent not loaded yet) are swallowed so the hook can
-    # never break session start.
-    subprocess.run(
-        ["launchctl", "start", label],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
     return 0
 
 
