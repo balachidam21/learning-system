@@ -51,7 +51,8 @@ done
 
 # Register the SessionStart hook (event-driven extractor trigger)
 echo "Registering SessionStart hook in ~/.claude/settings.json..."
-"$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/install_hook.py" install
+"$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/install_hook.py" install \
+  || echo "  WARNING: hook registration failed — run it manually: .venv/bin/python install_hook.py install" >&2
 
 echo ""
 echo "Done. Verify with:"
