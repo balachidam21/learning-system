@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Idempotently (un)install the learning-system SessionStart hook in
-~/.claude/settings.json. Backs up to settings.json.bak before writing."""
+~/.claude/settings.json. Before writing, backs up the current file to
+settings.json.bak (this is the pre-THIS-run state; repeated runs roll it forward,
+so it is not a permanent pre-install snapshot)."""
 import argparse
 import json
 import shutil
@@ -13,7 +15,7 @@ HOOK_COMMAND = f"{ROOT}/.venv/bin/python {ROOT}/trigger.py"
 
 
 def add_hook(settings: dict, command: str) -> dict:
-    """Return settings with the SessionStart command hook present (idempotent)."""
+    """Ensure the SessionStart command hook is present, mutating `settings` in place and returning it (idempotent)."""
     session_start = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
     for group in session_start:
         for h in group.get("hooks", []):
@@ -24,10 +26,14 @@ def add_hook(settings: dict, command: str) -> dict:
 
 
 def remove_hook(settings: dict, command: str) -> dict:
-    session_start = settings.get("hooks", {}).get("SessionStart", [])
+    """Remove the command hook from SessionStart, mutating `settings` in place and
+    returning it. No-op (and does NOT create a 'hooks' key) if there are none."""
+    if "hooks" not in settings or "SessionStart" not in settings["hooks"]:
+        return settings
+    session_start = settings["hooks"]["SessionStart"]
     for group in session_start:
         group["hooks"] = [h for h in group.get("hooks", []) if h.get("command") != command]
-    settings.setdefault("hooks", {})["SessionStart"] = [g for g in session_start if g.get("hooks")]
+    settings["hooks"]["SessionStart"] = [g for g in session_start if g.get("hooks")]
     return settings
 
 
