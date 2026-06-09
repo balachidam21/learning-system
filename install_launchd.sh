@@ -49,6 +49,11 @@ for TASK in extractor aggregator drift-monitor; do
   echo "  installed: $LABEL"
 done
 
+# Register the SessionStart hook (event-driven extractor trigger)
+echo "Registering SessionStart hook in ~/.claude/settings.json..."
+"$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/install_hook.py" install \
+  || echo "  WARNING: hook registration failed — run it manually: .venv/bin/python install_hook.py install" >&2
+
 echo ""
 echo "Done. Verify with:"
 echo "  launchctl list | grep learning-system"

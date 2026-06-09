@@ -29,6 +29,16 @@ Note: macOS cron cannot access Keychain in its security context, so the claude C
 
 The extractor uses the Claude Code CLI (`claude`) under the hood — no API key needed. Uses your Claude Code subscription auth from `~/.claude/`.
 
+## Event-driven extraction (v0.3.0)
+
+The extractor is triggered by a Claude Code **SessionStart hook**, not the 2am clock:
+when you start a session in an opted-in project, `trigger.py` runs `launchctl start`
+on the extractor LaunchAgent, which extracts detached in your (awake, Keychain-unlocked)
+session. This fixes the unattended-2am hang on the macOS permission prompt. The launchd
+`StartCalendarInterval` is kept as a **weekly** (Sunday 02:00) safety net in case the hook
+ever stops firing. `install_launchd.sh` registers the hook; remove it with
+`./.venv/bin/python install_hook.py uninstall`.
+
 ## Manual usage
 
 ```bash
@@ -76,6 +86,7 @@ weekend of each month to walk through findings.
 
 ## Changelog
 
+- `0.3.0` — event-driven extractor trigger: SessionStart hook replaces the daily 2am launchd run; the extractor now fires when you're awake / Keychain-unlocked; weekly Sunday 02:00 launchd run kept as a fallback.
 - `0.2.0` — extraction reliability: failure observability in meta (error/raw_response/stop_reason/api_error_status/attempts), bounded per-call retry, robust JSON parse, non-ok kept out of signal.jsonl; drift_monitor failure-rate now meta-sourced and excludes skipped_too_large; aggregator weekly footer reports extracted-signal count.
   Note: a chunked session with some failed chunks is recorded as a partial success and is not re-attempted until the next extractor_version bump (retry is within-run only).
 - `0.1.0` — initial release
