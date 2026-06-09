@@ -29,6 +29,16 @@ Note: macOS cron cannot access Keychain in its security context, so the claude C
 
 The extractor uses the Claude Code CLI (`claude`) under the hood — no API key needed. Uses your Claude Code subscription auth from `~/.claude/`.
 
+## Event-driven extraction (v0.3.0)
+
+The extractor is triggered by a Claude Code **SessionStart hook**, not the 2am clock:
+when you start a session in an opted-in project, `trigger.py` runs `launchctl start`
+on the extractor LaunchAgent, which extracts detached in your (awake, Keychain-unlocked)
+session. This fixes the unattended-2am hang on the macOS permission prompt. The launchd
+`StartCalendarInterval` is kept as a **weekly** (Sunday 02:00) safety net in case the hook
+ever stops firing. `install_launchd.sh` registers the hook; remove it with
+`./.venv/bin/python install_hook.py uninstall`.
+
 ## Manual usage
 
 ```bash

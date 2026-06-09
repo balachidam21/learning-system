@@ -68,7 +68,7 @@ def test_scan_all_skips_unchanged_sessions(tmp_path):
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps({
-        "schema_version": 1, "extractor_version": "0.2.0",
+        "schema_version": 1, "extractor_version": "0.3.0",
         "sessions": {"sess1": {"last_mtime": mtime}}
     }))
 
