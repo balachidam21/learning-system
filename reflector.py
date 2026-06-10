@@ -259,6 +259,9 @@ def reflect(project_dir: Path, week: Optional[str] = None) -> ReflectionResult:
     stale = stale_accepted(rows, ref_week=week)
 
     signals = _load_signal_window(signal_path, week)
+    if not signals:
+        # nothing happened in the window — don't burn a CLI call on zero evidence
+        return ReflectionResult(stale_accepted=stale)
     artifacts = _artifact_bundle(project_dir)
 
     prompt_text = PROMPT_PATH.read_text().replace(

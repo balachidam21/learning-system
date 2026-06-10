@@ -147,3 +147,38 @@ def test_reflect_follow_through_lists_stale_accepted(tmp_path):
     with patch("reflector.subprocess.run", return_value=_mock_cli([])):
         result = reflect(project, week="2026-W24")
     assert [r["title"] for r in result.stale_accepted] == ["Old accepted thing"]
+
+
+def test_reflect_empty_signal_window_skips_cli_call(tmp_path):
+    """No sessions in the window -> no CLI call, sane empty result (stale still surfaces)."""
+    project = _seed_project(tmp_path)
+    # ledger has a stale accepted row that must still surface without the CLI
+    ledger_dir = project / "log" / "reflections"
+    ledger_dir.mkdir(parents=True)
+    rid = proposal_id("new_skill", "Old accepted thing")
+    (ledger_dir / "proposals.jsonl").write_text(
+        json.dumps({"id": rid, "type": "new_skill", "title": "Old accepted thing",
+                    "evidence": ["a a", "b b"], "status": "pending", "created_week": "2019-W01"}) + "\n"
+        + json.dumps({"id": rid, "status": "accepted", "decided_week": "2019-W01", "handoff": None}) + "\n"
+    )
+    with patch("reflector.subprocess.run") as run_mock:
+        result = reflect(project, week="2019-W05")  # fixture sessions are 2026 — out of window
+    run_mock.assert_not_called()
+    assert result.new_pending == []
+    assert result.error is None
+    assert [r["title"] for r in result.stale_accepted] == ["Old accepted thing"]
+
+
+def test_load_signal_window_latest_wins_by_ended_at(tmp_path):
+    """Two rows for one session_id: the one with the later ended_at wins."""
+    from reflector import _load_signal_window
+    sig = tmp_path / "signal.jsonl"
+    older = {"session_id": "s1", "started_at": "2026-06-08T01:00:00Z",
+             "ended_at": "2026-06-08T02:00:00Z", "topics": ["old extraction"]}
+    newer = {"session_id": "s1", "started_at": "2026-06-08T01:00:00Z",
+             "ended_at": "2026-06-08T05:00:00Z", "topics": ["re-extraction"]}
+    # write NEWER first, OLDER second: insertion order must not decide the winner
+    sig.write_text(json.dumps(newer) + "\n" + json.dumps(older) + "\n")
+    out = _load_signal_window(sig, week="2026-W24")
+    assert len(out) == 1
+    assert out[0]["topics"] == ["re-extraction"]
