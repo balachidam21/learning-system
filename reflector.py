@@ -34,6 +34,9 @@ MAX_PROPOSALS_PER_WEEK = 3
 MIN_EVIDENCE = 2
 VALID_TYPES = ("new_skill", "improve_skill", "workflow_fix", "new_check")
 
+SIGNAL_WINDOW_WEEKS = 3
+ARTIFACT_MAX_BYTES = 20_000  # per artifact file, head-trimmed to bound prompt size
+
 _FENCE_SEARCH_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -79,6 +82,14 @@ class ProposalSet:
     cut: List[str] = field(default_factory=list)
     error: Optional[str] = None
     raw_response: Optional[str] = None
+
+
+@dataclass
+class ReflectionResult:
+    new_pending: List[Dict[str, Any]] = field(default_factory=list)
+    stale_accepted: List[Dict[str, Any]] = field(default_factory=list)
+    cut: List[str] = field(default_factory=list)
+    error: Optional[str] = None
 
 
 def _call_reflector(prompt_text: str, content: str) -> ProposalSet:
@@ -157,6 +168,130 @@ def _validate_and_cap(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if len(kept) >= MAX_PROPOSALS_PER_WEEK:
             break
     return kept
+
+
+def _load_signal_window(signal_path: Path, week: str,
+                        window_weeks: int = SIGNAL_WINDOW_WEEKS) -> List[Dict[str, Any]]:
+    """Latest-wins-by-session-id load (like aggregator._load_signals), filtered to
+    the trailing `window_weeks` ISO weeks ending at `week` (inclusive)."""
+    if not signal_path.exists():
+        return []
+    seen: Dict[str, Dict[str, Any]] = {}
+    for line in signal_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        sid = rec.get("session_id")
+        if sid is None:
+            continue
+        if sid not in seen or rec.get("ended_at", "") >= seen[sid].get("ended_at", ""):
+            seen[sid] = rec
+    year, w = week.split("-W")
+    end = datetime.date.fromisocalendar(int(year), int(w), 1) + datetime.timedelta(days=7)
+    start = end - datetime.timedelta(weeks=window_weeks)
+    out = []
+    for rec in seen.values():
+        try:
+            t = datetime.datetime.fromisoformat(
+                (rec.get("started_at", "") or "").replace("Z", "")).date()
+        except ValueError:
+            continue
+        if start <= t < end:
+            out.append(rec)
+    return out
+
+
+def _artifact_bundle(project_dir: Path) -> str:
+    """Best-effort read of the system's own artifacts. Missing files are skipped
+    (degrade to signal-only). Each file is head-trimmed to ARTIFACT_MAX_BYTES."""
+    parts: List[str] = []
+
+    skills_dir = project_dir / ".claude" / "skills"
+    if skills_dir.exists():
+        names = sorted(p.name for p in skills_dir.iterdir() if p.is_dir())
+        if names:
+            parts.append("EXISTING SKILLS: " + ", ".join(names))
+
+    for label, rel in (("PATCH_LIST", "log/PATCH_LIST.md"),
+                       ("CURRENT_STATE", "plan/CURRENT_STATE.md")):
+        p = project_dir / rel
+        if p.exists():
+            parts.append(f"--- {label} ---\n{p.read_text()[:ARTIFACT_MAX_BYTES]}")
+
+    weekly_dir = project_dir / "log" / "weekly"
+    if weekly_dir.exists():
+        recents = sorted(weekly_dir.glob("*.md"))[-2:]
+        for p in recents:
+            parts.append(f"--- WEEKLY {p.name} ---\n{p.read_text()[:ARTIFACT_MAX_BYTES]}")
+
+    return "\n\n".join(parts)
+
+
+def _build_content(signals: List[Dict[str, Any]], artifacts: str) -> str:
+    """Assemble the user-message content. Open titles do NOT flow here — they fill
+    the prompt's {open_titles} slot via PROMPT_PATH formatting in reflect()."""
+    return (
+        "SIGNAL (trailing window):\n"
+        + "\n".join(json.dumps(s) for s in signals)
+        + "\n\nARTIFACTS:\n" + (artifacts or "(none available)")
+    )
+
+
+def _append_ledger_rows(ledger_path: Path, rows: List[Dict[str, Any]]) -> None:
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("a") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+
+def reflect(project_dir: Path, week: Optional[str] = None) -> ReflectionResult:
+    """Run the weekly reflection pass for one project. Appends new pending rows
+    to the ledger and returns new_pending + stale_accepted for /bird-eye."""
+    week = week or current_week()
+    signal_path = project_dir / "log" / "signal.jsonl"
+    ledger_path = project_dir / "log" / "reflections" / "proposals.jsonl"
+
+    rows = load_ledger(ledger_path)
+    titles = open_titles(rows)
+    stale = stale_accepted(rows, ref_week=week)
+
+    signals = _load_signal_window(signal_path, week)
+    artifacts = _artifact_bundle(project_dir)
+
+    prompt_text = PROMPT_PATH.read_text().replace(
+        "{open_titles}",
+        "\n".join(f"- {t}" for t in titles) if titles else "(none yet)",
+    )
+    content = _build_content(signals, artifacts)
+
+    ps = _call_reflector(prompt_text, content)
+    if ps.error:
+        return ReflectionResult(stale_accepted=stale, error=ps.error)
+
+    kept = _validate_and_cap(ps.proposals)
+
+    # Hash backstop: drop exact-replay duplicates already present in the ledger,
+    # AND collapse same-id duplicates emitted within this single batch (the model
+    # can paraphrase to the same normalized title twice; _validate_and_cap does
+    # not dedup, so without `seen` we would append two rows with one id).
+    new_rows: List[Dict[str, Any]] = []
+    seen: set = set()
+    for p in kept:
+        rid = proposal_id(p["type"], p["title"])
+        if rid in rows or rid in seen:
+            continue
+        seen.add(rid)
+        new_rows.append({
+            "id": rid, "type": p["type"], "title": p["title"],
+            "evidence": p["evidence"], "status": "pending", "created_week": week,
+        })
+    if new_rows:
+        _append_ledger_rows(ledger_path, new_rows)
+
+    return ReflectionResult(new_pending=new_rows, stale_accepted=stale, cut=ps.cut)
 
 
 def _main() -> None:
