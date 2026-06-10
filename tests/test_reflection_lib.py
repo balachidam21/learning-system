@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from lib.reflection import (
@@ -11,7 +12,6 @@ from lib.reflection import (
 
 
 def _write(ledger: Path, *rows):
-    import json
     ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
 
@@ -134,3 +134,35 @@ def test_stale_accepted_measures_from_decided_week_not_created_week(tmp_path):
     assert stale_accepted(rows, ref_week="2026-W24") == []
     # checked at W25 (a week after acceptance) -> stale.
     assert [r["title"] for r in stale_accepted(rows, ref_week="2026-W25")] == ["Late-accepted"]
+
+
+def test_load_ledger_orphan_transition_row_is_skipped(tmp_path):
+    """A transition row arriving before/without its proposal row must not seed a
+    bogus record (and must not corrupt a later proposal row's status)."""
+    ledger = tmp_path / "proposals.jsonl"
+    _write(
+        ledger,
+        {"id": "x1", "status": "accepted", "decided_week": "2026-W23", "handoff": None},  # orphan first
+        {"id": "x1", "type": "new_skill", "title": "T", "evidence": ["a", "b"],
+         "status": "pending", "created_week": "2026-W24"},
+        {"id": "x1", "status": "dismissed", "decided_week": "2026-W24", "handoff": None},
+    )
+    rows = load_ledger(ledger)
+    # the orphan transition did not poison the merge; the real history holds
+    assert rows["x1"]["status"] == "dismissed"
+    assert rows["x1"]["title"] == "T"
+
+
+def test_stale_accepted_skips_malformed_decided_week(tmp_path):
+    ledger = tmp_path / "proposals.jsonl"
+    _write(
+        ledger,
+        {"id": "bad", "type": "new_skill", "title": "Bad week", "evidence": ["a", "b"],
+         "status": "pending", "created_week": "2026-W23"},
+        {"id": "bad", "status": "accepted", "decided_week": "not-a-week", "handoff": None},
+        {"id": "ok", "type": "new_skill", "title": "Good week", "evidence": ["a", "b"],
+         "status": "pending", "created_week": "2026-W23"},
+        {"id": "ok", "status": "accepted", "decided_week": "2026-W23", "handoff": None},
+    )
+    stale = stale_accepted(load_ledger(ledger), ref_week="2026-W24")
+    assert [r["title"] for r in stale] == ["Good week"]  # bad row skipped, not crashed on

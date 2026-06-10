@@ -27,7 +27,7 @@ def proposal_id(ptype: str, title: str) -> str:
 
 
 def current_week(today: datetime.date = None) -> str:
-    """ISO week like '2026-W24' — same format as aggregator._current_week."""
+    """ISO week like '2026-W24'."""
     today = today or datetime.date.today()
     y, w, _ = today.isocalendar()
     return f"{y}-W{w:02d}"
@@ -48,9 +48,14 @@ def weeks_ago(created_week: str, ref_week: str) -> int:
 def load_ledger(ledger_path: Path) -> Dict[str, Dict[str, Any]]:
     """Event-sourced load: latest-wins by id over append-only rows.
 
-    Proposal rows seed the full record; later transition rows overlay
-    status/decided_week/handoff by id. Corrupted/blank lines are skipped
-    (mirror aggregator._load_signals resilience).
+    Invariant: only proposal rows (carrying both "type" and "title") may seed a
+    new id; later transition rows overlay status/decided_week/handoff onto an
+    already-seeded id. An orphan transition row (unknown id, no type/title) is
+    skipped — so a transition that lands before its proposal cannot seed a bogus
+    record and cannot poison the later proposal's status. The writer guarantees
+    proposal-first (decide raises KeyError for unknown ids), so orphans only
+    occur on corruption; skipping them mirrors aggregator._load_signals'
+    skip-corruption philosophy. Corrupted/blank lines are likewise skipped.
     """
     if not ledger_path.exists():
         return {}
@@ -68,6 +73,10 @@ def load_ledger(ledger_path: Path) -> Dict[str, Dict[str, Any]]:
         if not rid:
             continue
         if rid not in rows:
+            # Only a proposal row (both type + title) may seed a new id.
+            # Orphan transition rows are skipped, not allowed to seed.
+            if "type" not in rec or "title" not in rec:
+                continue
             rows[rid] = dict(rec)
         else:
             rows[rid].update(rec)
@@ -79,6 +88,9 @@ def open_titles(rows: Dict[str, Dict[str, Any]]) -> List[str]:
 
     Accepted ones are intentionally excluded — an accepted proposal is being
     acted on (or re-surfaced via stale_accepted), not re-proposed.
+
+    Titles are returned RAW (un-normalized) on purpose: normalization is only
+    for the dedup hash, while the LLM sees the original wording.
     """
     out = []
     for r in rows.values():
@@ -105,7 +117,15 @@ def stale_accepted(rows: Dict[str, Dict[str, Any]], ref_week: str,
         decided = r.get("decided_week")
         if not decided:
             continue
-        if weeks_ago(decided, ref_week) >= stale_weeks:
+        try:
+            # A negative weeks_ago (ref before decided) correctly yields
+            # not-stale, since it stays below stale_weeks.
+            age = weeks_ago(decided, ref_week)
+        except ValueError:
+            # Malformed decided_week (or ref_week) — skip this row rather than
+            # crash the whole pass (row-level resilience).
+            continue
+        if age >= stale_weeks:
             out.append(r)
     out.sort(key=lambda r: (r.get("decided_week", ""), r.get("title", "")))
     return out
