@@ -297,10 +297,61 @@ def reflect(project_dir: Path, week: Optional[str] = None) -> ReflectionResult:
     return ReflectionResult(new_pending=new_rows, stale_accepted=stale, cut=ps.cut)
 
 
+def decide(project_dir: Path, proposal_id_str: str, accept: bool,
+           handoff: Optional[str] = None, week: Optional[str] = None) -> Dict[str, Any]:
+    """Append an accept/dismiss transition row for an existing proposal id.
+
+    Append-only: the original row is never rewritten; load_ledger resolves the
+    final state latest-wins. Raises KeyError if the id isn't in the ledger.
+    """
+    week = week or current_week()
+    ledger_path = project_dir / "log" / "reflections" / "proposals.jsonl"
+    rows = load_ledger(ledger_path)
+    if proposal_id_str not in rows:
+        raise KeyError(f"unknown proposal id: {proposal_id_str}")
+    transition = {
+        "id": proposal_id_str,
+        "status": "accepted" if accept else "dismissed",
+        "decided_week": week,
+        "handoff": handoff if accept else None,
+    }
+    _append_ledger_rows(ledger_path, [transition])
+    return transition
+
+
 def _main() -> None:
-    parser = argparse.ArgumentParser(description="Dream-reflection weekly pass.")
-    parser.parse_args()
-    parser.error("subcommands wired up in a later task")
+    parser = argparse.ArgumentParser(description="Dream-reflection weekly pass + decisions.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_reflect = sub.add_parser("reflect", help="Run the weekly reflection pass.")
+    p_reflect.add_argument("--project-dir", type=Path, required=True)
+    p_reflect.add_argument("--week", type=str, default=None, help="ISO week like 2026-W24")
+
+    p_decide = sub.add_parser("decide", help="Accept or dismiss a proposal by id.")
+    p_decide.add_argument("id")
+    p_decide.add_argument("--project-dir", type=Path, required=True)
+    g = p_decide.add_mutually_exclusive_group(required=True)
+    g.add_argument("--accept", action="store_true")
+    g.add_argument("--dismiss", action="store_true")
+    p_decide.add_argument("--handoff", type=str, default=None)
+    p_decide.add_argument("--week", type=str, default=None)
+
+    args = parser.parse_args()
+
+    if args.cmd == "reflect":
+        result = reflect(args.project_dir, week=args.week)
+        print(json.dumps({
+            "new_pending": result.new_pending,
+            "stale_accepted": result.stale_accepted,
+            "cut": result.cut,
+            "error": result.error,
+        }, indent=2))
+        return
+    if args.cmd == "decide":
+        t = decide(args.project_dir, args.id, accept=args.accept,
+                   handoff=args.handoff, week=args.week)
+        print(json.dumps(t))
+        return
 
 
 if __name__ == "__main__":
