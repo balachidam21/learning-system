@@ -76,3 +76,60 @@ def test_validate_and_cap_caps_at_three():
     kept = _validate_and_cap(raw)
     assert len(kept) == 3
     assert [p["title"] for p in kept] == ["t0", "t1", "t2"]
+
+
+def test_call_reflector_top_level_array_is_an_error_not_silent_empty():
+    """A bare JSON array response must surface as an error with the raw trail,
+    not silently mis-slice into one element / empty proposals."""
+    arr = json.dumps([{"type": "new_skill", "title": "x", "evidence": ["a", "b"]}])
+    with patch("reflector.subprocess.run", return_value=_mock_cli(arr)):
+        ps = _call_reflector("PROMPT", "CONTENT")
+    assert ps.proposals == []
+    assert ps.error is not None
+    assert ps.raw_response
+
+
+def test_call_reflector_dict_proposals_field_is_an_error():
+    with patch("reflector.subprocess.run", return_value=_mock_cli(json.dumps({"proposals": {"k": "v"}, "cut": []}))):
+        ps = _call_reflector("PROMPT", "CONTENT")
+    assert ps.proposals == []
+    assert "expected list" in ps.error
+
+
+def test_call_reflector_missing_result_field_is_explicit_error():
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                              "duration_ms": 1, "usage": {}, "total_cost_usd": 0.0,
+                              "session_id": "x", "uuid": "y"})  # no "result" key
+    proc.stderr = ""
+    with patch("reflector.subprocess.run", return_value=proc):
+        ps = _call_reflector("PROMPT", "CONTENT")
+    assert ps.proposals == []
+    assert "missing 'result'" in ps.error
+
+
+def test_validate_and_cap_requires_distinct_evidence():
+    raw = [{"type": "new_skill", "title": "dup", "evidence": ["same", "same"]}]  # 2 items, 1 distinct
+    assert _validate_and_cap(raw) == []
+
+
+def test_call_reflector_sends_prompt_via_append_system_prompt_and_content_via_stdin():
+    captured = {}
+    def _capture(*args, **kwargs):
+        captured["cmd"] = args[0]
+        captured["stdin"] = kwargs.get("input")
+        return _mock_cli(_payload([]))
+    with patch("reflector.subprocess.run", side_effect=_capture):
+        _call_reflector("THE PROMPT TEXT", "THE CONTENT")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--append-system-prompt") + 1] == "THE PROMPT TEXT"
+    assert captured["stdin"] == "THE CONTENT"
+
+
+def test_call_reflector_timeout_is_captured_as_error():
+    import subprocess as _sp
+    with patch("reflector.subprocess.run", side_effect=_sp.TimeoutExpired(cmd="claude", timeout=600)):
+        ps = _call_reflector("PROMPT", "CONTENT")
+    assert ps.proposals == []
+    assert ps.error  # captured, not raised

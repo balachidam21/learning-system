@@ -39,10 +39,23 @@ _FENCE_SEARCH_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 def _robust_json_parse(text: str) -> Optional[Dict[str, Any]]:
     """Layered: bare -> fenced-anywhere -> outermost {...}. Returns dict or None.
-    Same heuristic as extractor._robust_json_parse."""
+    Same heuristic as extractor._robust_json_parse.
+
+    Known limitation: a non-JSON '{' appearing before the real object defeats
+    the first-'{'/last-'}' slice heuristic.
+    """
     if not text or not text.strip():
         return None
     s = text.strip()
+    # A bare top-level JSON array is not a proposal envelope; surfacing None here
+    # lets the caller report an error instead of the first-'{'/last-'}' slice
+    # silently extracting a single element and "succeeding".
+    try:
+        bare = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        bare = None
+    if isinstance(bare, list):
+        return None
     candidates = [s]
     fence = _FENCE_SEARCH_RE.search(s)
     if fence:
@@ -106,14 +119,23 @@ def _call_reflector(prompt_text: str, content: str) -> ProposalSet:
         detail = str(outer.get("result") or outer.get("subtype") or "")
         return ProposalSet(error=f"claude CLI reported error: {detail[:300]}")
 
-    result_text = outer.get("result", "") or ""
+    result_text = outer.get("result")
+    if result_text is None:
+        return ProposalSet(error="outer JSON missing 'result' field")
     parsed = _robust_json_parse(result_text)
     if parsed is None:
         return ProposalSet(error="non-JSON response", raw_response=result_text[:2000])
-    return ProposalSet(
-        proposals=parsed.get("proposals", []) or [],
-        cut=parsed.get("cut", []) or [],
-    )
+
+    raw_proposals = parsed.get("proposals", []) or []
+    if not isinstance(raw_proposals, list):
+        return ProposalSet(
+            error=f"proposals field is {type(raw_proposals).__name__}, expected list",
+            raw_response=result_text[:2000],
+        )
+    raw_cut = parsed.get("cut", []) or []
+    if not isinstance(raw_cut, list):
+        raw_cut = []  # cut is non-critical; coerce silently
+    return ProposalSet(proposals=raw_proposals, cut=raw_cut)
 
 
 def _validate_and_cap(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
