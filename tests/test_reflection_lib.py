@@ -151,6 +151,24 @@ def test_load_ledger_orphan_transition_row_is_skipped(tmp_path):
     # the orphan transition did not poison the merge; the real history holds
     assert rows["x1"]["status"] == "dismissed"
     assert rows["x1"]["title"] == "T"
+    # decided_week must come from the real dismissal, not the skipped orphan
+    assert rows["x1"]["decided_week"] == "2026-W24"
+
+
+def test_load_ledger_orphan_transition_without_later_transition_leaves_clean_pending(tmp_path):
+    """Regression guard for the seed-rule: an orphan accepted-transition followed by
+    a proposal with NO later transition must yield a clean pending record — on the
+    old merge logic the orphan seeded first and leaked decided_week onto it."""
+    ledger = tmp_path / "proposals.jsonl"
+    _write(
+        ledger,
+        {"id": "x2", "status": "accepted", "decided_week": "2026-W23", "handoff": None},  # orphan
+        {"id": "x2", "type": "new_skill", "title": "Clean", "evidence": ["a", "b"],
+         "status": "pending", "created_week": "2026-W24"},
+    )
+    rows = load_ledger(ledger)
+    assert rows["x2"]["status"] == "pending"
+    assert "decided_week" not in rows["x2"]  # the orphan's field did not leak
 
 
 def test_stale_accepted_skips_malformed_decided_week(tmp_path):
