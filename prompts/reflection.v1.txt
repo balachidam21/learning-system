@@ -24,11 +24,12 @@ Output ONLY this JSON object, no prose, no markdown fences:
 {
   "proposals": [
     {
-      "type": "new_skill" | "improve_skill" | "workflow_fix" | "new_check",
+      "type": "one of: new_skill, improve_skill, workflow_fix, new_check",
       "title": "short imperative title",
       "evidence": ["quote or paraphrase 1", "quote or paraphrase 2"]
     }
   ],
-  "cut": ["title of a lower-ranked proposal that was dropped", "..."]
+  "cut": ["title of a lower-ranked proposal that was dropped"]
 }
+The "type" value must be exactly one of the four type strings, nothing else.
 If there is nothing worth proposing, output {"proposals": [], "cut": []}.
